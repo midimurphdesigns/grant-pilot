@@ -54,3 +54,47 @@ export function loadAllowlist(): AllowlistedIntent[] {
 export function findIntent(id: string): AllowlistedIntent | null {
   return loadAllowlist().find((i) => i.id === id) ?? null;
 }
+
+/**
+ * Custom-intent guardrails. Visitors get to free-text the *intent*
+ * (the funding-need description) but pick from a preset profile —
+ * we never let strangers free-text the structured profile, which
+ * would be the prompt-injection surface.
+ */
+export const CUSTOM_INTENT_MIN_CHARS = 20;
+export const CUSTOM_INTENT_MAX_CHARS = 600;
+
+/** Reject obvious prompt-injection / jailbreak attempts before any model call. */
+export function rejectionReason(intent: string): string | null {
+  const trimmed = intent.trim();
+  if (trimmed.length < CUSTOM_INTENT_MIN_CHARS) {
+    return `Please describe your funding need in at least ${CUSTOM_INTENT_MIN_CHARS} characters.`;
+  }
+  if (trimmed.length > CUSTOM_INTENT_MAX_CHARS) {
+    return `Please keep it under ${CUSTOM_INTENT_MAX_CHARS} characters.`;
+  }
+  // Heuristic patterns that virtually never appear in genuine funding-need
+  // descriptions but are common in prompt-injection attempts. Cheap to check,
+  // worth the false-positive risk for a public hosted demo.
+  const lower = trimmed.toLowerCase();
+  const banned = [
+    "ignore previous",
+    "ignore above",
+    "ignore the above",
+    "disregard previous",
+    "system prompt",
+    "system:",
+    "you are now",
+    "act as",
+    "jailbreak",
+    "<|",
+    "</s>",
+    "[INST]",
+  ];
+  for (const phrase of banned) {
+    if (lower.includes(phrase.toLowerCase())) {
+      return "That input looks more like a prompt-injection attempt than a funding-need description. Please describe your business or nonprofit's actual funding need.";
+    }
+  }
+  return null;
+}
