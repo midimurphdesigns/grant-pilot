@@ -1,6 +1,10 @@
 # grant-pilot
 
-An agent that helps a small business or nonprofit find federal grants they qualify for, and drafts the skeleton of an application — orchestrating three specialist sub-agents (discovery, eligibility, drafter) over public grants.gov and SAM.gov data.
+> An agent that helps a small business or nonprofit find federal grants they qualify for, and drafts the skeleton of an application — orchestrating three specialist sub-agents (discovery, eligibility, drafter) over public grants.gov and SAM.gov data.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+**Live demo:** [grant-pilot.kevinmurphywebdev.com](https://grant-pilot.kevinmurphywebdev.com) — pick a preset intent or write your own with a custom organization profile, no signup or keys.
 
 Third in a trilogy with [fedbench](https://github.com/midimurphdesigns/fedbench) (eval harness) and [fieldops-mcp](https://github.com/midimurphdesigns/fieldops-mcp) (MCP server). This one is the orchestration shape: a multi-turn agent that decomposes intent, dispatches sub-agents as tools, and composes their outputs into a transcript a human can read.
 
