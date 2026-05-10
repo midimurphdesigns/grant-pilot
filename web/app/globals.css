@@ -1,5 +1,7 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
+/* Original palette variables (legacy — used by some existing inline styles) */
 :root {
   --background: 10 10 11;
   --ink: 245 241 234;
@@ -7,18 +9,69 @@
   --muted: 156 163 175;
 }
 
+/* shadcn/ui design tokens, mapped to the existing palette.
+   We're dark-only — no light variant. Values are in `oklch()` for
+   Tailwind v4 + shadcn compat. */
+@theme inline {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --color-background: rgb(10 10 11);
+  --color-foreground: rgb(245 241 234);
+
+  --color-card: rgb(14 14 16);
+  --color-card-foreground: rgb(245 241 234);
+
+  --color-popover: rgb(18 18 20);
+  --color-popover-foreground: rgb(245 241 234);
+
+  --color-primary: rgb(77 255 255);
+  --color-primary-foreground: rgb(10 10 11);
+
+  --color-secondary: rgb(28 28 32);
+  --color-secondary-foreground: rgb(245 241 234);
+
+  --color-muted: rgb(28 28 32);
+  --color-muted-foreground: rgb(156 163 175);
+
+  --color-accent: rgb(28 28 32);
+  --color-accent-foreground: rgb(245 241 234);
+
+  --color-destructive: rgb(248 113 113);
+  --color-destructive-foreground: rgb(10 10 11);
+
+  --color-border: rgb(255 255 255 / 0.1);
+  --color-input: rgb(255 255 255 / 0.1);
+  --color-ring: rgb(77 255 255 / 0.5);
+
+  --radius: 0.5rem;
+}
+
 html,
 body {
-  background: rgb(var(--background));
-  color: rgb(var(--ink));
+  background: var(--color-background);
+  color: var(--color-foreground);
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
 code,
 pre {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: var(--font-mono);
+}
+
+/* Focus-visible: cyan ring on every interactive element. */
+*:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* Sonner / toast positioning in dark theme */
+[data-sonner-toaster][data-theme="dark"] {
+  --normal-bg: rgb(18 18 20);
+  --normal-border: rgb(255 255 255 / 0.1);
+  --normal-text: rgb(245 241 234);
 }
