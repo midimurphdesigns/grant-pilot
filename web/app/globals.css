@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+:root {
+  --background: 10 10 11;
+  --ink: 245 241 234;
+  --accent: 77 255 255;
+  --muted: 156 163 175;
+}
+
+html,
+body {
+  background: rgb(var(--background));
+  color: rgb(var(--ink));
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
