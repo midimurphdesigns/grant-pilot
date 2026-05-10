@@ -24,7 +24,7 @@ import { check, type EligibilityResult } from "../agents/eligibility";
 import { draft, type DrafterResult } from "../agents/drafter";
 import type { SubAgentEnvelope, UserProfile } from "../agents/types";
 
-const MIN_SCORE_FOR_ELIGIBILITY = 50;
+const MIN_SCORE_FOR_ELIGIBILITY = 30;
 const MAX_ELIGIBILITY_CHECKS = 3;
 
 export type TranscriptStep =

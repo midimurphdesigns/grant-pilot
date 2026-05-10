@@ -63,9 +63,12 @@ Output ONLY a JSON object with this exact shape:
 { "keyword": "<2-200 char query>", "rationale": "<short why>" }
 
 Guidelines:
-- Combine the most distinctive nouns from the user's intent with one or two profile attributes (state, industry term, ownership status if directly relevant).
-- Prefer specific over broad. "rural workforce training Vermont" beats "training programs".
-- Do NOT include the words "grant" or "funding" — grants.gov already filters to opportunities.
+- grants.gov uses a strict keyword AND-match — every term in the query must appear in the opportunity. FAVOR FEWER, BROADER TERMS over many specific ones.
+- Use 2-4 words maximum. "infrastructure construction" beats "commercial infrastructure construction Arizona Phoenix small contractor".
+- Drop geography (state names, ZIPs, metros) from the query — grants are filtered by applicant location at eligibility time, not in the keyword index.
+- Drop size qualifiers like "small business" — most opportunities don't use that phrase verbatim.
+- Drop the words "grant" and "funding" — grants.gov already filters to opportunities.
+- Pick terms an agency program officer would actually write into a NOFO title or synopsis.
 - Output JSON only. No prose, no markdown fences.`;
 
 const RANK_SYSTEM = `You rank federal grant opportunities for fit against a stated goal and applicant profile.
