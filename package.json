@@ -1,0 +1,50 @@
+{
+  "name": "grant-pilot",
+  "version": "0.0.1",
+  "description": "An agent that helps small businesses and nonprofits discover federal grants they qualify for and drafts the skeleton of an application — orchestrating discovery, eligibility, and drafting sub-agents over public grants.gov + SAM.gov data.",
+  "type": "module",
+  "module": "src/index.ts",
+  "license": "MIT",
+  "author": "Kevin Murphy <kmurphywebdev@gmail.com> (https://kevinmurphywebdev.com)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/midimurphdesigns/grant-pilot.git"
+  },
+  "homepage": "https://github.com/midimurphdesigns/grant-pilot#readme",
+  "bugs": {
+    "url": "https://github.com/midimurphdesigns/grant-pilot/issues"
+  },
+  "keywords": [
+    "llm",
+    "agents",
+    "sub-agents",
+    "orchestration",
+    "rag",
+    "anthropic",
+    "claude",
+    "mcp",
+    "grants",
+    "grants-gov",
+    "sam-gov",
+    "fde",
+    "applied-ai"
+  ],
+  "scripts": {
+    "smoke": "bun run src/smoke.ts",
+    "demo": "bun run src/eval/run.ts --replay",
+    "eval": "bun run src/eval/run.ts",
+    "eval:record": "bun run src/eval/run.ts --record",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.1",
+    "zod": "^3.23.8"
+  }
+}
