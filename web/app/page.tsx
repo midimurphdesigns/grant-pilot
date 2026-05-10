@@ -27,6 +27,25 @@ type BudgetStatus = {
   configured: boolean;
 };
 
+type RunMode = "preset" | "custom";
+
+type RunState =
+  | { status: "idle" }
+  | { status: "running"; mode: RunMode; presetId: string | null; phase: Phase; startedAt: number }
+  | { status: "done"; mode: RunMode; presetId: string | null; durationMs: number; cost?: number }
+  | { status: "error"; mode: RunMode; presetId: string | null; message: string };
+
+type Phase = "starting" | "discovery" | "eligibility" | "drafter" | "summarizing";
+
+const PHASE_ORDER: Phase[] = ["starting", "discovery", "eligibility", "drafter", "summarizing"];
+const PHASE_LABELS: Record<Phase, string> = {
+  starting: "Starting",
+  discovery: "Searching grants.gov",
+  eligibility: "Checking eligibility",
+  drafter: "Drafting application skeleton",
+  summarizing: "Summarizing",
+};
+
 const INTENTS: Intent[] = [
   {
     id: "az-construction",
@@ -100,17 +119,13 @@ const DEFAULT_CUSTOM_PROFILE: CustomProfile = {
   missionDescription: "",
 };
 
-type Phase = "discovery" | "eligibility" | "drafter" | null;
-
 export default function Page() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [running, setRunning] = useState(false);
+  const [tab, setTab] = useState<RunMode>("preset");
+  const [run, setRun] = useState<RunState>({ status: "idle" });
   const [events, setEvents] = useState<StepEvent[]>([]);
-  const [phase, setPhase] = useState<Phase>(null);
   const [elapsed, setElapsed] = useState(0);
   const [banner, setBanner] = useState<string | null>(null);
 
-  const [customMode, setCustomMode] = useState(false);
   const [customText, setCustomText] = useState("");
   const [customProfile, setCustomProfile] = useState<CustomProfile>(DEFAULT_CUSTOM_PROFILE);
   const [customError, setCustomError] = useState<string | null>(null);
@@ -118,6 +133,9 @@ export default function Page() {
   const [budget, setBudget] = useState<BudgetStatus | null>(null);
 
   const transcriptRef = useRef<HTMLDivElement | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const isRunning = run.status === "running";
 
   useEffect(() => {
     transcriptRef.current?.scrollTo({
@@ -126,16 +144,16 @@ export default function Page() {
     });
   }, [events]);
 
-  // Tick elapsed seconds while running.
   useEffect(() => {
-    if (!running) return;
-    setElapsed(0);
+    if (!isRunning) {
+      setElapsed(0);
+      return;
+    }
     const start = Date.now();
     const id = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 250);
     return () => clearInterval(id);
-  }, [running]);
+  }, [isRunning]);
 
-  // Refresh budget status on mount and after every run.
   useEffect(() => {
     let cancelled = false;
     async function load() {
@@ -145,27 +163,43 @@ export default function Page() {
         const data = (await r.json()) as BudgetStatus;
         if (!cancelled) setBudget(data);
       } catch {
-        // budget is informational only
+        // budget is informational
       }
     }
     void load();
     return () => {
       cancelled = true;
     };
-  }, [running]);
+  }, [run.status]);
 
-  async function streamRun(body: Record<string, unknown>) {
-    setRunning(true);
+  // Cancel any in-flight request when the component unmounts.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, []);
+
+  async function streamRun(body: Record<string, unknown>, mode: RunMode, presetId: string | null) {
+    // Cancel any prior in-flight request before starting a new one.
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     setEvents([]);
-    setPhase(null);
     setBanner(null);
     setCustomError(null);
+    setRun({
+      status: "running",
+      mode,
+      presetId,
+      phase: "starting",
+      startedAt: Date.now(),
+    });
 
     try {
       const resp = await fetch("/api/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: ctrl.signal,
       });
 
       const ct = resp.headers.get("content-type") ?? "";
@@ -173,46 +207,67 @@ export default function Page() {
         const json = (await resp.json()) as {
           mode?: string;
           reason?: string;
-          run?: { steps?: { kind: string; [k: string]: unknown }[]; summary?: StepEvent extends { kind: "summary"; summary: infer S } ? S : unknown };
+          run?: { steps?: { kind: string; [k: string]: unknown }[]; summary?: { totalCostUSD: number; totalLatencyMs: number; draftFor: string | null } };
           error?: string;
           remaining?: number;
         };
+
         if (json.error === "rate-limited") {
           setBanner(`Rate limit hit (${json.remaining ?? 0} runs left this hour). Please come back later.`);
+          setRun({
+            status: "error",
+            mode,
+            presetId,
+            message: "rate limit",
+          });
         } else if (json.error === "rejected") {
           setCustomError(json.reason ?? "Input rejected.");
+          setRun({ status: "error", mode, presetId, message: "rejected" });
         } else if (json.error === "over-cap") {
           setBanner(json.reason ?? "Daily budget cap reached.");
+          setRun({ status: "error", mode, presetId, message: "over-cap" });
         } else if (json.error === "no-key") {
           setBanner(json.reason ?? "Live mode unavailable.");
+          setRun({ status: "error", mode, presetId, message: "no-key" });
         } else if (json.error) {
           setBanner(`Error: ${json.error}${json.reason ? ` — ${json.reason}` : ""}`);
+          setRun({ status: "error", mode, presetId, message: json.error });
         } else if (json.mode === "replay") {
           setBanner(json.reason ?? "Replaying recorded run.");
           if (json.run?.steps) {
             for (const step of json.run.steps) {
               setEvents((prev) => [...prev, { kind: "step", step: step as { kind: string; [k: string]: unknown } }]);
             }
-            if (json.run.summary) {
-              setEvents((prev) => [
-                ...prev,
-                { kind: "summary", summary: json.run!.summary as StepEvent extends { kind: "summary"; summary: infer S } ? S : never },
-              ]);
-            }
+          }
+          if (json.run?.summary) {
+            const summary = json.run.summary;
+            setEvents((prev) => [...prev, { kind: "summary", summary }]);
+            setRun({
+              status: "done",
+              mode,
+              presetId,
+              durationMs: summary.totalLatencyMs,
+              cost: summary.totalCostUSD,
+            });
+          } else {
+            setRun({ status: "done", mode, presetId, durationMs: 0 });
           }
         }
-        setRunning(false);
         return;
       }
 
       if (!resp.body) {
         setBanner("No response body.");
-        setRunning(false);
+        setRun({ status: "error", mode, presetId, message: "no body" });
         return;
       }
+
       const reader = resp.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
+      let lastSummary: { totalCostUSD: number; totalLatencyMs: number; draftFor: string | null } | null = null;
+      let sawError: string | null = null;
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -224,7 +279,18 @@ export default function Page() {
           try {
             const ev = JSON.parse(line) as StepEvent;
             if (ev.kind === "phase") {
-              setPhase(ev.phase);
+              setRun((r) =>
+                r.status === "running" ? { ...r, phase: ev.phase as Phase } : r,
+              );
+            }
+            if (ev.kind === "summary") {
+              lastSummary = ev.summary;
+              setRun((r) =>
+                r.status === "running" ? { ...r, phase: "summarizing" } : r,
+              );
+            }
+            if (ev.kind === "error") {
+              sawError = ev.message;
             }
             setEvents((prev) => [...prev, ev]);
           } catch {
@@ -232,20 +298,39 @@ export default function Page() {
           }
         }
       }
+
+      if (sawError) {
+        setRun({ status: "error", mode, presetId, message: sawError });
+      } else if (lastSummary) {
+        setRun({
+          status: "done",
+          mode,
+          presetId,
+          durationMs: lastSummary.totalLatencyMs,
+          cost: lastSummary.totalCostUSD,
+        });
+      } else {
+        setRun({ status: "done", mode, presetId, durationMs: Date.now() - (run.status === "running" ? run.startedAt : Date.now()) });
+      }
     } catch (err) {
+      if ((err as { name?: string })?.name === "AbortError") {
+        // We aborted intentionally — don't surface.
+        return;
+      }
       setBanner(`Network error: ${err instanceof Error ? err.message : String(err)}`);
+      setRun({ status: "error", mode, presetId, message: String(err) });
     } finally {
-      setRunning(false);
+      if (abortRef.current === ctrl) abortRef.current = null;
     }
   }
 
   function runPreset(id: string) {
-    setSelectedId(id);
-    setCustomMode(false);
-    void streamRun({ intentId: id });
+    if (isRunning) return;
+    void streamRun({ intentId: id }, "preset", id);
   }
 
   function runCustom() {
+    if (isRunning) return;
     if (customText.trim().length < CUSTOM_INTENT_MIN_CHARS) {
       setCustomError(`At least ${CUSTOM_INTENT_MIN_CHARS} characters please.`);
       return;
@@ -258,20 +343,43 @@ export default function Page() {
       setCustomError("ZIP must be 5 digits.");
       return;
     }
-    setSelectedId(null);
     const profileToSend: CustomProfile = {
       ...customProfile,
       missionDescription: customProfile.missionDescription?.trim() || undefined,
     };
-    void streamRun({
-      customIntent: customText.trim(),
-      customProfile: profileToSend,
-    });
+    void streamRun(
+      { customIntent: customText.trim(), customProfile: profileToSend },
+      "custom",
+      null,
+    );
+  }
+
+  function clearOutput() {
+    if (isRunning) return;
+    setEvents([]);
+    setBanner(null);
+    setCustomError(null);
+    setRun({ status: "idle" });
+  }
+
+  function switchTab(next: RunMode) {
+    if (isRunning) return; // form locked while running
+    if (tab === next) return;
+    setTab(next);
+    // Clear any prior output so visitors don't see preset transcript while
+    // staring at the custom form (or vice versa).
+    setEvents([]);
+    setBanner(null);
+    setCustomError(null);
+    setRun({ status: "idle" });
   }
 
   const customRemaining = CUSTOM_INTENT_MAX_CHARS - customText.length;
   const missionRemaining =
     CUSTOM_MISSION_MAX_CHARS - (customProfile.missionDescription?.length ?? 0);
+
+  // Disable everything that would create overlapping state while a run is in flight.
+  const formDisabled = isRunning;
 
   return (
     <main className="min-h-screen px-6 py-12 max-w-3xl mx-auto">
@@ -294,271 +402,291 @@ export default function Page() {
 
       <div className="flex gap-2 mb-4 text-xs">
         <button
-          onClick={() => setCustomMode(false)}
+          onClick={() => switchTab("preset")}
+          disabled={isRunning && tab !== "preset"}
           className={`px-3 py-1 border ${
-            !customMode
+            tab === "preset"
               ? "border-[rgb(var(--accent))] text-[rgb(var(--accent))]"
               : "border-white/10 text-[rgb(var(--muted))] hover:border-white/30"
-          }`}
+          } ${isRunning && tab !== "preset" ? "opacity-40 cursor-not-allowed" : ""}`}
+          title={isRunning && tab !== "preset" ? "Wait for current run to finish" : ""}
         >
           Preset intents
         </button>
         <button
-          onClick={() => setCustomMode(true)}
+          onClick={() => switchTab("custom")}
+          disabled={isRunning && tab !== "custom"}
           className={`px-3 py-1 border ${
-            customMode
+            tab === "custom"
               ? "border-[rgb(var(--accent))] text-[rgb(var(--accent))]"
               : "border-white/10 text-[rgb(var(--muted))] hover:border-white/30"
-          }`}
+          } ${isRunning && tab !== "custom" ? "opacity-40 cursor-not-allowed" : ""}`}
+          title={isRunning && tab !== "custom" ? "Wait for current run to finish" : ""}
         >
           Custom intent
         </button>
       </div>
 
-      {!customMode && (
-        <section className="grid gap-3 mb-8">
-          {INTENTS.map((i) => (
-            <button
-              key={i.id}
-              onClick={() => runPreset(i.id)}
-              disabled={running}
-              className={`text-left p-4 border transition ${
-                selectedId === i.id
-                  ? "border-[rgb(var(--accent))]"
-                  : "border-white/10 hover:border-white/30"
-              } ${running ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-            >
-              <div className="text-sm">{i.intent}</div>
-              <div className="text-xs mt-1 text-[rgb(var(--muted))]">
-                {i.profile.state} · {i.profile.entityType} · {i.profile.employeeCount} employees
-              </div>
-            </button>
-          ))}
+      {tab === "preset" && (
+        <section className="grid gap-3 mb-8" aria-busy={formDisabled}>
+          {INTENTS.map((i) => {
+            const isThisRunning = isRunning && run.mode === "preset" && run.presetId === i.id;
+            const isOtherRunning = isRunning && !isThisRunning;
+            return (
+              <button
+                key={i.id}
+                onClick={() => runPreset(i.id)}
+                disabled={formDisabled}
+                aria-pressed={isThisRunning}
+                className={`text-left p-4 border transition ${
+                  isThisRunning
+                    ? "border-[rgb(var(--accent))]"
+                    : "border-white/10 hover:border-white/30"
+                } ${formDisabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"} ${
+                  isOtherRunning ? "" : ""
+                }`}
+                title={isOtherRunning ? "Another run is in progress" : ""}
+              >
+                <div className="text-sm">{i.intent}</div>
+                <div className="text-xs mt-1 text-[rgb(var(--muted))]">
+                  {i.profile.state} · {i.profile.entityType} · {i.profile.employeeCount} employees
+                </div>
+              </button>
+            );
+          })}
         </section>
       )}
 
-      {customMode && (
-        <section className="mb-8 space-y-6">
-          <div>
-            <label className="block text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
-              Describe your funding need (1–2 sentences)
-            </label>
-            <textarea
-              value={customText}
-              onChange={(e) => {
-                setCustomText(e.target.value);
-                setCustomError(null);
-              }}
-              maxLength={CUSTOM_INTENT_MAX_CHARS}
-              rows={3}
-              placeholder="e.g. I run a 6-person community theater in Maine looking for arts-and-culture grants under $50K."
-              className="w-full p-3 bg-transparent border border-white/10 focus:border-[rgb(var(--accent))] focus:outline-none text-sm leading-5"
-              disabled={running}
-            />
-            <div className="flex justify-between mt-1 text-[10px] text-[rgb(var(--muted))]">
-              <span>
-                {customText.length < CUSTOM_INTENT_MIN_CHARS
-                  ? `${CUSTOM_INTENT_MIN_CHARS - customText.length} more characters needed`
-                  : "Looks good"}
-              </span>
-              <span>{customRemaining} chars left</span>
+      {tab === "custom" && (
+        <section className="mb-8 space-y-6" aria-busy={formDisabled}>
+          <fieldset disabled={formDisabled} className={formDisabled ? "opacity-60" : ""}>
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
+                Describe your funding need (1–2 sentences)
+              </label>
+              <textarea
+                value={customText}
+                onChange={(e) => {
+                  setCustomText(e.target.value);
+                  setCustomError(null);
+                }}
+                maxLength={CUSTOM_INTENT_MAX_CHARS}
+                rows={3}
+                placeholder="e.g. I run a 6-person community theater in Maine looking for arts-and-culture grants under $50K."
+                className="w-full p-3 bg-transparent border border-white/10 focus:border-[rgb(var(--accent))] focus:outline-none text-sm leading-5 disabled:cursor-not-allowed"
+              />
+              <div className="flex justify-between mt-1 text-[10px] text-[rgb(var(--muted))]">
+                <span>
+                  {customText.length < CUSTOM_INTENT_MIN_CHARS
+                    ? `${CUSTOM_INTENT_MIN_CHARS - customText.length} more characters needed`
+                    : "Looks good"}
+                </span>
+                <span>{customRemaining} chars left</span>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <div className="text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-3">
-              Your organization
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-xs">
-              <Field label="Entity type">
-                <select
-                  value={customProfile.entityType}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({
-                      ...p,
-                      entityType: e.target.value as CustomProfile["entityType"],
-                    }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                >
-                  <option value="for-profit">For-profit</option>
-                  <option value="nonprofit">Nonprofit</option>
-                  <option value="sole-prop">Sole proprietorship</option>
-                  <option value="co-op">Cooperative</option>
-                  <option value="tribal">Tribal entity</option>
-                </select>
-              </Field>
+            <div className="mt-6">
+              <div className="text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-3">
+                Your organization
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <Field label="Entity type">
+                  <select
+                    value={customProfile.entityType}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        entityType: e.target.value as CustomProfile["entityType"],
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  >
+                    <option value="for-profit">For-profit</option>
+                    <option value="nonprofit">Nonprofit</option>
+                    <option value="sole-prop">Sole proprietorship</option>
+                    <option value="co-op">Cooperative</option>
+                    <option value="tribal">Tribal entity</option>
+                  </select>
+                </Field>
 
-              <Field label="State">
-                <select
-                  value={customProfile.state}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({ ...p, state: e.target.value }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                >
-                  {US_STATES.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </Field>
+                <Field label="State">
+                  <select
+                    value={customProfile.state}
+                    onChange={(e) => setCustomProfile((p) => ({ ...p, state: e.target.value }))}
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  >
+                    {US_STATES.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
 
-              <Field label="ZIP" hint="5 digits">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="\d{5}"
-                  value={customProfile.zip}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({ ...p, zip: e.target.value.replace(/\D/g, "").slice(0, 5) }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                />
-              </Field>
+                <Field label="ZIP" hint="5 digits">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{5}"
+                    value={customProfile.zip}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        zip: e.target.value.replace(/\D/g, "").slice(0, 5),
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  />
+                </Field>
 
-              <Field label="NAICS" hint="2–6 digits">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="\d{2,6}"
-                  value={customProfile.naicsCode}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({ ...p, naicsCode: e.target.value.replace(/\D/g, "").slice(0, 6) }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                />
-              </Field>
+                <Field label="NAICS" hint="2–6 digits">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="\d{2,6}"
+                    value={customProfile.naicsCode}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        naicsCode: e.target.value.replace(/\D/g, "").slice(0, 6),
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  />
+                </Field>
 
-              <Field label="Employees">
-                <input
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={customProfile.employeeCount}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({
-                      ...p,
-                      employeeCount: Math.max(1, Math.min(10000, Number(e.target.value) || 1)),
-                    }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                />
-              </Field>
+                <Field label="Employees">
+                  <input
+                    type="number"
+                    min={1}
+                    max={10000}
+                    value={customProfile.employeeCount}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        employeeCount: Math.max(1, Math.min(10000, Number(e.target.value) || 1)),
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  />
+                </Field>
 
-              <Field label="Annual revenue (USD)">
-                <input
-                  type="number"
-                  min={0}
-                  max={1_000_000_000}
-                  step={1000}
-                  value={customProfile.annualRevenueUSD}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({
-                      ...p,
-                      annualRevenueUSD: Math.max(0, Math.min(1_000_000_000, Number(e.target.value) || 0)),
-                    }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                />
-              </Field>
+                <Field label="Annual revenue (USD)">
+                  <input
+                    type="number"
+                    min={0}
+                    max={1_000_000_000}
+                    step={1000}
+                    value={customProfile.annualRevenueUSD}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        annualRevenueUSD: Math.max(0, Math.min(1_000_000_000, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  />
+                </Field>
 
-              <Field label="Years in operation">
-                <input
-                  type="number"
-                  min={0}
-                  max={200}
-                  step={0.5}
-                  value={customProfile.yearsInOperation}
-                  onChange={(e) =>
-                    setCustomProfile((p) => ({
-                      ...p,
-                      yearsInOperation: Math.max(0, Math.min(200, Number(e.target.value) || 0)),
-                    }))
-                  }
-                  disabled={running}
-                  className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none"
-                />
-              </Field>
+                <Field label="Years in operation">
+                  <input
+                    type="number"
+                    min={0}
+                    max={200}
+                    step={0.5}
+                    value={customProfile.yearsInOperation}
+                    onChange={(e) =>
+                      setCustomProfile((p) => ({
+                        ...p,
+                        yearsInOperation: Math.max(0, Math.min(200, Number(e.target.value) || 0)),
+                      }))
+                    }
+                    className="w-full bg-transparent border border-white/10 px-2 py-1 focus:border-[rgb(var(--accent))] focus:outline-none disabled:cursor-not-allowed"
+                  />
+                </Field>
 
-              <div className="col-span-2">
-                <div className="text-[10px] uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
-                  Ownership designations
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {(
-                    [
-                      ["womanOwned", "Woman-owned"],
-                      ["veteranOwned", "Veteran-owned"],
-                      ["minorityOwned", "Minority-owned"],
-                      ["disadvantaged", "Disadvantaged"],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <label key={key} className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={customProfile.ownership[key]}
-                        onChange={(e) =>
-                          setCustomProfile((p) => ({
-                            ...p,
-                            ownership: { ...p.ownership, [key]: e.target.checked },
-                          }))
-                        }
-                        disabled={running}
-                      />
-                      {label}
-                    </label>
-                  ))}
+                <div className="col-span-2">
+                  <div className="text-[10px] uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
+                    Ownership designations
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {(
+                      [
+                        ["womanOwned", "Woman-owned"],
+                        ["veteranOwned", "Veteran-owned"],
+                        ["minorityOwned", "Minority-owned"],
+                        ["disadvantaged", "Disadvantaged"],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={customProfile.ownership[key]}
+                          onChange={(e) =>
+                            setCustomProfile((p) => ({
+                              ...p,
+                              ownership: { ...p.ownership, [key]: e.target.checked },
+                            }))
+                          }
+                        />
+                        {label}
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
-              Mission description (optional)
-            </label>
-            <textarea
-              value={customProfile.missionDescription ?? ""}
-              onChange={(e) =>
-                setCustomProfile((p) => ({
-                  ...p,
-                  missionDescription: e.target.value.slice(0, CUSTOM_MISSION_MAX_CHARS),
-                }))
-              }
-              maxLength={CUSTOM_MISSION_MAX_CHARS}
-              rows={2}
-              placeholder="e.g. 501(c)(3) community theater producing 4 mainstage shows per season in rural Maine."
-              className="w-full p-3 bg-transparent border border-white/10 focus:border-[rgb(var(--accent))] focus:outline-none text-sm leading-5"
-              disabled={running}
-            />
-            <div className="text-right mt-1 text-[10px] text-[rgb(var(--muted))]">
-              {missionRemaining} chars left
+            <div className="mt-6">
+              <label className="block text-xs uppercase tracking-wider text-[rgb(var(--muted))] mb-2">
+                Mission description (optional)
+              </label>
+              <textarea
+                value={customProfile.missionDescription ?? ""}
+                onChange={(e) =>
+                  setCustomProfile((p) => ({
+                    ...p,
+                    missionDescription: e.target.value.slice(0, CUSTOM_MISSION_MAX_CHARS),
+                  }))
+                }
+                maxLength={CUSTOM_MISSION_MAX_CHARS}
+                rows={2}
+                placeholder="e.g. 501(c)(3) community theater producing 4 mainstage shows per season in rural Maine."
+                className="w-full p-3 bg-transparent border border-white/10 focus:border-[rgb(var(--accent))] focus:outline-none text-sm leading-5 disabled:cursor-not-allowed"
+              />
+              <div className="text-right mt-1 text-[10px] text-[rgb(var(--muted))]">
+                {missionRemaining} chars left
+              </div>
             </div>
-          </div>
+          </fieldset>
 
           {customError && (
             <div className="p-3 border border-red-400/40 text-xs text-red-300">{customError}</div>
           )}
 
-          <button
-            onClick={runCustom}
-            disabled={running || customText.trim().length < CUSTOM_INTENT_MIN_CHARS}
-            className={`px-4 py-2 border text-xs uppercase tracking-wider ${
-              running || customText.trim().length < CUSTOM_INTENT_MIN_CHARS
-                ? "border-white/10 text-[rgb(var(--muted))] cursor-not-allowed"
-                : "border-[rgb(var(--accent))] text-[rgb(var(--accent))] hover:bg-[rgb(var(--accent))]/10"
-            }`}
-          >
-            Run custom intent
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={runCustom}
+              disabled={
+                formDisabled || customText.trim().length < CUSTOM_INTENT_MIN_CHARS
+              }
+              className={`px-4 py-2 border text-xs uppercase tracking-wider ${
+                formDisabled || customText.trim().length < CUSTOM_INTENT_MIN_CHARS
+                  ? "border-white/10 text-[rgb(var(--muted))] cursor-not-allowed"
+                  : "border-[rgb(var(--accent))] text-[rgb(var(--accent))] hover:bg-[rgb(var(--accent))]/10"
+              }`}
+            >
+              {run.status === "done" || run.status === "error" ? "Run again" : "Run custom intent"}
+            </button>
+            {(run.status === "done" || run.status === "error") && events.length > 0 && (
+              <button
+                onClick={clearOutput}
+                className="px-4 py-2 border border-white/10 text-[rgb(var(--muted))] text-xs uppercase tracking-wider hover:border-white/30 hover:text-[rgb(var(--ink))]"
+              >
+                Clear output
+              </button>
+            )}
+          </div>
 
           <details className="text-[11px] text-[rgb(var(--muted))]">
             <summary className="cursor-pointer hover:text-[rgb(var(--ink))]">
@@ -590,24 +718,29 @@ export default function Page() {
         </div>
       )}
 
-      <RunStatus running={running} phase={phase} elapsed={elapsed} events={events} />
+      {(run.status === "running" || run.status === "done" || run.status === "error") && (
+        <RunProgress run={run} elapsed={elapsed} />
+      )}
 
-      <div
-        ref={transcriptRef}
-        className="border border-white/10 p-4 min-h-[200px] max-h-[60vh] overflow-y-auto text-xs leading-5 whitespace-pre-wrap"
-      >
-        {events.length === 0 && !running && (
-          <span className="text-[rgb(var(--muted))]">
-            {customMode ? "Fill in the form and run." : "Pick a preset intent above."} Transcript
-            appears here.
-          </span>
-        )}
-        {events.map((ev, i) => (
-          <pre key={i} className="mb-3">
-            {JSON.stringify(ev, null, 2)}
-          </pre>
-        ))}
-      </div>
+      {events.length > 0 && (
+        <div
+          ref={transcriptRef}
+          className="border border-white/10 p-4 min-h-[200px] max-h-[60vh] overflow-y-auto text-xs leading-5 whitespace-pre-wrap mt-3"
+        >
+          {events.map((ev, i) => (
+            <pre key={i} className="mb-3">
+              {JSON.stringify(ev, null, 2)}
+            </pre>
+          ))}
+        </div>
+      )}
+
+      {events.length === 0 && run.status === "idle" && (
+        <div className="border border-white/10 border-dashed p-4 min-h-[120px] text-xs text-[rgb(var(--muted))] flex items-center justify-center">
+          {tab === "custom" ? "Fill in the form and run." : "Pick a preset intent above."}{" "}
+          Transcript will appear here.
+        </div>
+      )}
     </main>
   );
 }
@@ -624,54 +757,120 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
-function RunStatus({
-  running,
-  phase,
-  elapsed,
-  events,
-}: {
-  running: boolean;
-  phase: Phase;
-  elapsed: number;
-  events: StepEvent[];
-}) {
-  if (!running && events.length === 0) return null;
+function RunProgress({ run, elapsed }: { run: RunState; elapsed: number }) {
+  if (run.status === "idle") return null;
 
-  const stepCount = events.filter((e) => e.kind === "step").length;
-  const phaseLabel = phase
-    ? {
-        discovery: "Searching grants.gov…",
-        eligibility: "Checking eligibility…",
-        drafter: "Drafting application skeleton…",
-      }[phase]
-    : running
-      ? "Starting…"
-      : "Done";
+  const isRunning = run.status === "running";
+  const isDone = run.status === "done";
+  const isError = run.status === "error";
 
-  const cost = events.find((e) => e.kind === "summary")?.summary?.totalCostUSD;
+  const currentPhase: Phase | null = isRunning ? run.phase : null;
+  const currentPhaseIndex = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1;
+
+  const headlineLabel = isError
+    ? `Run failed${run.message ? ` — ${run.message}` : ""}`
+    : isDone
+      ? "Done"
+      : currentPhase
+        ? `${PHASE_LABELS[currentPhase]}…`
+        : "Running…";
 
   return (
-    <div className="mb-4 p-3 border border-white/10 flex items-center gap-3 text-xs">
-      {running && (
-        <span
-          aria-hidden
-          className="inline-block w-3 h-3 rounded-full bg-[rgb(var(--accent))] animate-pulse"
-        />
-      )}
-      {!running && (
-        <span aria-hidden className="inline-block w-3 h-3 rounded-full bg-[rgb(var(--accent))]" />
-      )}
-      <span className="text-[rgb(var(--ink))]">{phaseLabel}</span>
-      <span className="ml-auto font-mono text-[10px] text-[rgb(var(--muted))]">
-        {running && (
-          <>
-            {elapsed}s · {stepCount} step{stepCount === 1 ? "" : "s"} · custom runs typically
-            take 60–120s
-          </>
+    <section
+      role="status"
+      aria-live="polite"
+      className={`p-4 border ${
+        isError
+          ? "border-red-400/40"
+          : isDone
+            ? "border-[rgb(var(--accent))]/40"
+            : "border-white/10"
+      }`}
+    >
+      <div className="flex items-center gap-3 text-sm">
+        {isRunning && (
+          <span
+            aria-hidden
+            className="inline-block w-3 h-3 rounded-full bg-[rgb(var(--accent))] animate-pulse"
+          />
         )}
-        {!running && cost !== undefined && <>${cost.toFixed(4)} · {stepCount} steps</>}
-      </span>
-    </div>
+        {isDone && (
+          <span aria-hidden className="inline-block w-3 h-3 rounded-full bg-[rgb(var(--accent))]" />
+        )}
+        {isError && (
+          <span aria-hidden className="inline-block w-3 h-3 rounded-full bg-red-400" />
+        )}
+        <span className="text-[rgb(var(--ink))]">{headlineLabel}</span>
+        <span className="ml-auto font-mono text-[10px] text-[rgb(var(--muted))]">
+          {isRunning && (
+            <>
+              {elapsed}s · {run.mode === "custom" ? "custom runs typically take 60–120s" : "preset runs take 60–120s live, ~1s replay"}
+            </>
+          )}
+          {isDone && (
+            <>
+              {(run.durationMs / 1000).toFixed(1)}s
+              {run.cost !== undefined && <> · ${run.cost.toFixed(4)}</>}
+            </>
+          )}
+        </span>
+      </div>
+
+      <ol className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
+        {(["discovery", "eligibility", "drafter"] as Phase[]).map((p, i) => {
+          const phaseIndex = PHASE_ORDER.indexOf(p);
+          let state: "pending" | "active" | "done" | "skipped";
+          if (isError) {
+            state = currentPhaseIndex >= phaseIndex ? "done" : "skipped";
+          } else if (isDone) {
+            state = "done";
+          } else if (currentPhaseIndex > phaseIndex) {
+            state = "done";
+          } else if (currentPhaseIndex === phaseIndex) {
+            state = "active";
+          } else {
+            state = "pending";
+          }
+
+          const colorClasses = {
+            pending: "border-white/10 text-[rgb(var(--muted))]",
+            active: "border-[rgb(var(--accent))] text-[rgb(var(--accent))]",
+            done: "border-[rgb(var(--accent))]/40 text-[rgb(var(--ink))]",
+            skipped: "border-white/10 text-[rgb(var(--muted))] opacity-50",
+          }[state];
+
+          const icon =
+            state === "active"
+              ? "▸"
+              : state === "done"
+                ? "✓"
+                : state === "skipped"
+                  ? "—"
+                  : `${i + 1}`;
+
+          return (
+            <li
+              key={p}
+              className={`p-2 border flex items-start gap-2 ${colorClasses}`}
+              aria-current={state === "active" ? "step" : undefined}
+            >
+              <span aria-hidden className="font-mono">
+                {icon}
+              </span>
+              <span className="leading-4">
+                <span className="block">{PHASE_LABELS[p]}</span>
+                {state === "active" && (
+                  <span className="block mt-1 text-[10px] opacity-70">in progress…</span>
+                )}
+                {state === "done" && (
+                  <span className="block mt-1 text-[10px] opacity-70">complete</span>
+                )}
+              </span>
+            </li>
+          );
+        })}
+      </ol>
+    </section>
   );
 }
 
