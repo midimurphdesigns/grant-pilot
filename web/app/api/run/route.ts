@@ -4,20 +4,13 @@
  * Two modes:
  *   - Preset:  body { intentId } — runs one of the 5 verified intents,
  *              over-cap falls back to that intent's recording.
- *   - Custom:  body { customIntent, profileId } — runs the visitor's
- *              free-text intent against a preset profile. Subject to
- *              the same per-IP rate limit and daily budget cap. No
- *              recording fallback (we never recorded their input);
- *              over-cap returns 503 with a banner.
+ *   - Custom:  body { customIntent, customProfile } — runs the visitor's
+ *              free-text intent against their structured profile (every
+ *              field bounded by enum/regex/range — no injection surface
+ *              outside the intent text + missionDescription which both
+ *              go through the same heuristic filter).
  *
- * Hard guardrails on custom mode (in lib/allowlist.ts):
- *   - 20-600 char length window
- *   - Profile is preset-only (never free-texted) — eliminates the
- *     structured prompt-injection surface
- *   - Heuristic rejection of common jailbreak phrases pre-LLM
- *
- * Response is NDJSON: one JSON object per line. The client splits on
- * newlines and renders each step as it arrives.
+ * Response is NDJSON: one JSON object per line.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -27,6 +20,7 @@ import { z } from "zod";
 import {
   CUSTOM_INTENT_MAX_CHARS,
   CUSTOM_INTENT_MIN_CHARS,
+  CustomProfileSchema,
   findIntent,
   rejectionReason,
 } from "@/lib/allowlist";
@@ -46,7 +40,7 @@ const BodySchema = z.union([
   }),
   z.object({
     customIntent: z.string().min(CUSTOM_INTENT_MIN_CHARS).max(CUSTOM_INTENT_MAX_CHARS),
-    profileId: z.string().min(1),
+    customProfile: CustomProfileSchema,
   }),
 ]);
 
@@ -58,17 +52,21 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const parsed = BodySchema.safeParse(body);
   if (!parsed.success) {
-    return NextResponse.json({ error: "invalid body" }, { status: 400 });
+    return NextResponse.json(
+      { error: "invalid body", reason: parsed.error.errors[0]?.message ?? "validation failed" },
+      { status: 400 },
+    );
   }
 
-  // Resolve the intent + profile we'll actually run against.
   let resolvedIntentText: string;
-  let resolvedProfile: ReturnType<typeof findIntent> extends infer T
-    ? T extends { profile: infer P }
-      ? P
-      : never
-    : never;
-  let displayIntent: ReturnType<typeof findIntent>;
+  let resolvedProfile:
+    | NonNullable<ReturnType<typeof findIntent>>["profile"]
+    | z.infer<typeof CustomProfileSchema>;
+  let displayIntent: {
+    id: string;
+    intent: string;
+    profile: typeof resolvedProfile;
+  };
   let isCustom = false;
 
   if ("intentId" in parsed.data) {
@@ -80,34 +78,36 @@ export async function POST(req: NextRequest) {
     resolvedProfile = found.profile;
     displayIntent = found;
   } else {
-    const reason = rejectionReason(parsed.data.customIntent);
-    if (reason) {
-      return NextResponse.json({ error: "rejected", reason }, { status: 400 });
+    // Custom mode — run rejection filter on intent + missionDescription.
+    const intentReason = rejectionReason(parsed.data.customIntent);
+    if (intentReason) {
+      return NextResponse.json({ error: "rejected", reason: intentReason }, { status: 400 });
     }
-    const profile = findIntent(parsed.data.profileId);
-    if (!profile) {
-      return NextResponse.json({ error: "profile not in allowlist" }, { status: 403 });
+    if (parsed.data.customProfile.missionDescription) {
+      const missionReason = rejectionReason(parsed.data.customProfile.missionDescription);
+      if (missionReason) {
+        return NextResponse.json(
+          { error: "rejected", reason: `mission description: ${missionReason}` },
+          { status: 400 },
+        );
+      }
     }
     resolvedIntentText = parsed.data.customIntent.trim();
-    resolvedProfile = profile.profile;
+    resolvedProfile = parsed.data.customProfile;
     displayIntent = {
-      id: `custom__${profile.id}`,
+      id: "custom",
       intent: resolvedIntentText,
-      profile: profile.profile,
+      profile: parsed.data.customProfile,
     };
     isCustom = true;
   }
 
-  // Rate-limit BEFORE any model call.
+  // Rate-limit before any model call.
   const ip = clientIp(req.headers);
   const rl = await checkRateLimit(ip);
   if (!rl.allowed) {
     return NextResponse.json(
-      {
-        error: "rate-limited",
-        remaining: rl.remaining,
-        resetMs: rl.resetMs,
-      },
+      { error: "rate-limited", remaining: rl.remaining, resetMs: rl.resetMs },
       { status: 429 },
     );
   }
@@ -115,8 +115,8 @@ export async function POST(req: NextRequest) {
   const budget = await getBudgetStatus();
 
   // Over cap on PRESET mode — serve that intent's recording with a banner.
-  if (budget.overCap && !isCustom && displayIntent) {
-    const replay = getReplay(displayIntent.id);
+  if (budget.overCap && !isCustom && "intentId" in parsed.data) {
+    const replay = getReplay(parsed.data.intentId);
     return NextResponse.json({
       mode: "replay",
       reason:
@@ -127,8 +127,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // Over cap on CUSTOM mode — no recording exists for the visitor's input,
-  // so we have to refuse rather than mislead.
+  // Over cap on CUSTOM mode — refuse, no recording exists.
   if (budget.overCap && isCustom) {
     return NextResponse.json(
       {
@@ -142,8 +141,6 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // No Anthropic key configured — preset mode falls back to recording,
-  // custom mode 503s.
   if (!process.env.ANTHROPIC_API_KEY) {
     if (isCustom) {
       return NextResponse.json(
@@ -151,8 +148,8 @@ export async function POST(req: NextRequest) {
         { status: 503 },
       );
     }
-    if (displayIntent) {
-      const replay = getReplay(displayIntent.id);
+    if ("intentId" in parsed.data) {
+      const replay = getReplay(parsed.data.intentId);
       return NextResponse.json({
         mode: "replay",
         reason: "Live key not configured — serving recorded run.",
@@ -170,14 +167,27 @@ export async function POST(req: NextRequest) {
       const send = (obj: unknown) => controller.enqueue(enc.encode(ndjson(obj)));
 
       send({ kind: "meta", mode: "live", intent: displayIntent, isCustom });
+      // Phase markers help the UI show "discovering / checking eligibility / drafting"
+      // without parsing the inner step shape.
+      send({ kind: "phase", phase: "discovery" });
 
       try {
+        // Run the planner. It already emits steps in order; we re-broadcast
+        // each one + a phase marker so the UI can render cleanly.
         const run = await runPlanner({
           client,
           intent: resolvedIntentText,
           profile: resolvedProfile,
         });
+        let lastKind: string | null = null;
         for (const step of run.steps) {
+          // Coarse phase changes between sub-agents.
+          if (step.kind === "eligibility" && lastKind !== "eligibility") {
+            send({ kind: "phase", phase: "eligibility" });
+          } else if (step.kind === "drafter" && lastKind !== "drafter") {
+            send({ kind: "phase", phase: "drafter" });
+          }
+          lastKind = step.kind;
           send({ kind: "step", step });
         }
         send({ kind: "summary", summary: run.summary });

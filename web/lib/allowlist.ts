@@ -63,6 +63,36 @@ export function findIntent(id: string): AllowlistedIntent | null {
  */
 export const CUSTOM_INTENT_MIN_CHARS = 20;
 export const CUSTOM_INTENT_MAX_CHARS = 600;
+export const CUSTOM_MISSION_MAX_CHARS = 400;
+
+/**
+ * Schema for a fully custom user profile. Every field is bounded —
+ * enums, integers with min/max, fixed-format strings, booleans. The
+ * only free-text field is `missionDescription`, which is length-capped
+ * and run through `rejectionReason()` like the intent itself.
+ *
+ * Constraining each field this way means there's no injection surface
+ * here that the preset profile didn't already have.
+ */
+export const CustomProfileSchema = z.object({
+  naicsCode: z
+    .string()
+    .regex(/^\d{2,6}$/, "NAICS code must be 2-6 digits"),
+  employeeCount: z.number().int().min(1).max(10000),
+  annualRevenueUSD: z.number().min(0).max(1_000_000_000),
+  state: z.string().length(2),
+  zip: z.string().regex(/^\d{5}$/, "ZIP must be 5 digits"),
+  ownership: z.object({
+    womanOwned: z.boolean(),
+    veteranOwned: z.boolean(),
+    minorityOwned: z.boolean(),
+    disadvantaged: z.boolean(),
+  }),
+  entityType: z.enum(["for-profit", "nonprofit", "sole-prop", "co-op", "tribal"]),
+  yearsInOperation: z.number().min(0).max(200),
+  missionDescription: z.string().max(CUSTOM_MISSION_MAX_CHARS).optional(),
+});
+export type CustomProfile = z.infer<typeof CustomProfileSchema>;
 
 /** Reject obvious prompt-injection / jailbreak attempts before any model call. */
 export function rejectionReason(intent: string): string | null {
