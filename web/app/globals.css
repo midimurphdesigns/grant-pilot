@@ -128,18 +128,25 @@ pre {
 .gp-tabs-trigger:hover {
   color: var(--color-foreground);
 }
+/* Active state: strongly visible. The earlier 6%-tint approach was
+   imperceptible on near-black; bumped to 14% so the active tab
+   visually pops. The label color uses !important because the
+   utility classes on the trigger (text-xs etc.) can specificity-
+   tie with our attribute selector; !important is the simplest
+   way to win consistently without a brittle specificity contest. */
 .gp-tabs-trigger[data-state="active"] {
-  color: var(--color-primary);
-  background-color: rgb(77 255 255 / 0.06);
+  color: var(--color-primary) !important;
+  background-color: rgb(77 255 255 / 0.14);
 }
 .gp-tabs-trigger[data-state="active"]::after {
   content: "";
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
-  height: 2px;
+  bottom: -1px;
+  height: 3px;
   background-color: var(--color-primary);
+  box-shadow: 0 0 8px rgb(77 255 255 / 0.5);
 }
 
 /* Sonner / toast positioning in dark theme */
