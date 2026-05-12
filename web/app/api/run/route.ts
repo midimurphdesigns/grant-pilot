@@ -23,7 +23,7 @@ import {
   findIntent,
   rejectionReason,
 } from "@/lib/allowlist";
-import { getBudgetStatus, recordSpend } from "@/lib/budget";
+import { reserveSpend, reconcileSpend } from "@/lib/budget";
 import { checkRateLimit, clientIp } from "@/lib/rate-limit";
 import { getReplay } from "@/lib/replay";
 
@@ -101,40 +101,61 @@ export async function POST(req: NextRequest) {
     isCustom = true;
   }
 
-  // Rate-limit before any model call.
+  // Rate-limit before any model call. Fails closed in production if
+  // Upstash is unreachable — see lib/rate-limit.ts.
   const ip = clientIp(req.headers);
   const rl = await checkRateLimit(ip);
   if (!rl.allowed) {
     return NextResponse.json(
-      { error: "rate-limited", remaining: rl.remaining, resetMs: rl.resetMs },
+      {
+        error: "rate-limited",
+        remaining: rl.remaining,
+        resetMs: rl.resetMs,
+        reason: rl.configured
+          ? undefined
+          : "Rate limiter unavailable. The hosted demo guards live API spend behind a per-IP limit, and the guard is currently offline. Try again later or read the recordings on the GitHub repo.",
+      },
       { status: 429 },
     );
   }
 
-  const budget = await getBudgetStatus();
+  // Atomically reserve an upper-bound spend amount BEFORE running the
+  // agent. This is the gate: concurrent callers serialize on the Redis
+  // INCRBYFLOAT, so no two requests can both observe a sub-cap counter
+  // and both proceed. The actual cost is reconciled after the run via
+  // reconcileSpend(reserved, actual) in the stream's finally block.
+  //
+  // For replay path (preset over-cap), reservation is not required —
+  // serving a static JSON recording costs nothing.
+  const reservation = await reserveSpend();
 
-  // Over cap on PRESET mode — serve that intent's recording with a banner.
-  if (budget.overCap && !isCustom && "intentId" in parsed.data) {
+  // Over cap (reservation refused) on PRESET mode — serve that intent's
+  // recording with a banner.
+  if (!reservation.granted && !isCustom && "intentId" in parsed.data) {
     const replay = getReplay(parsed.data.intentId);
     return NextResponse.json({
       mode: "replay",
-      reason:
-        `Daily budget cap of $${budget.capUSD} hit ($${budget.spentUSD.toFixed(2)} spent). ` +
-        `Serving the most recent recorded run for this intent. Live runs resume tomorrow UTC.`,
+      reason: reservation.configured
+        ? `Daily budget cap of $${reservation.capUSD} hit ` +
+          `($${reservation.postReservationSpentUSD.toFixed(2)} spent). ` +
+          `Serving the most recent recorded run for this intent. Live runs resume tomorrow UTC.`
+        : `Budget guard is offline. Serving the most recent recorded run for this intent.`,
       intent: displayIntent,
       run: replay?.run ?? null,
     });
   }
 
   // Over cap on CUSTOM mode — refuse, no recording exists.
-  if (budget.overCap && isCustom) {
+  if (!reservation.granted && isCustom) {
     return NextResponse.json(
       {
         error: "over-cap",
-        reason:
-          `Daily budget cap of $${budget.capUSD} hit ($${budget.spentUSD.toFixed(2)} spent). ` +
-          `Custom-intent runs are paused until tomorrow UTC. The 5 preset intents are still ` +
-          `available — they fall back to recorded runs.`,
+        reason: reservation.configured
+          ? `Daily budget cap of $${reservation.capUSD} hit ` +
+            `($${reservation.postReservationSpentUSD.toFixed(2)} spent). ` +
+            `Custom-intent runs are paused until tomorrow UTC. The 5 preset intents are still ` +
+            `available — they fall back to recorded runs.`
+          : `Budget guard is offline. Custom-intent runs are paused. Preset intents fall back to recordings.`,
       },
       { status: 503 },
     );
@@ -217,12 +238,22 @@ export async function POST(req: NextRequest) {
           send({ kind: "step", step });
         }
         send({ kind: "summary", summary: run.summary });
-        await recordSpend(run.summary.totalCostUSD);
+        // Reconcile the reservation with the actual cost. For a typical
+        // $0.10 run reserved at $0.30, this releases $0.20 back into the
+        // daily cap. For overshoots, it adds the delta. Reservation is
+        // already counted at this point either way.
+        await reconcileSpend(reservation.reservedUSD, run.summary.totalCostUSD);
       } catch (err) {
         send({
           kind: "error",
           message: err instanceof Error ? err.message : String(err),
         });
+        // Run failed mid-stream. Refund the reservation since no actual
+        // spend was committed (or only a partial amount we can't easily
+        // know). Reconciling to $0 is the safe direction — it releases
+        // the reservation and slightly under-counts a partial-run cost,
+        // which is preferable to permanently parking the reservation.
+        await reconcileSpend(reservation.reservedUSD, 0);
       } finally {
         controller.close();
       }
