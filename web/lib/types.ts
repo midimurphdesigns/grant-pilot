@@ -148,10 +148,51 @@ export type PartialDraft = {
   watchOuts?: string[];
 };
 
+/**
+ * In-flight shape of the Discovery sub-agent's ranking step. The
+ * ranking `streamObject` emits ranked entries one at a time; titles
+ * and agencies are hydrated server-side from the grants.gov response.
+ * Mirrors `PartialDiscovery` from src/agents/discovery.ts.
+ */
+export type PartialDiscovery = {
+  query: string;
+  queryRationale: string;
+  candidates: {
+    opportunityNumber?: string;
+    title?: string;
+    agencyName?: string | null;
+    closeDate?: string | null;
+    score?: number;
+    rationale?: string;
+  }[];
+};
+
+/**
+ * In-flight shape of the Eligibility sub-agent's verdict step. The
+ * verdict typically settles in ~50 tokens, so the UI can render the
+ * pass/fail/uncertain badge almost immediately and stream reasons +
+ * blockers in below.
+ */
+export type PartialEligibility = {
+  opportunityNumber: string;
+  title: string;
+  verdict?: "pass" | "fail" | "uncertain";
+  reasons?: string[];
+  blockers?: string[];
+  notes?: string;
+  samRegistration: {
+    checked: boolean;
+    active: boolean | null;
+    message: string;
+  };
+};
+
 export type StepEvent =
   | { kind: "meta"; mode: "live" | "replay"; intent: PresetIntent; isCustom?: boolean }
   | { kind: "phase"; phase: "discovery" | "eligibility" | "drafter" }
   | { kind: "step"; step: AnyStep }
+  | { kind: "discovery-partial"; partial: PartialDiscovery }
+  | { kind: "eligibility-partial"; opportunityNumber: string; partial: PartialEligibility }
   | { kind: "draft-partial"; opportunityNumber: string; partial: PartialDraft }
   | { kind: "summary"; summary: Summary }
   | { kind: "error"; message: string };

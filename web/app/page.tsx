@@ -35,6 +35,14 @@ export default function Page() {
     opportunityNumber: string;
     partial: import("@/lib/types").PartialDraft;
   } | null>(null);
+  const [partialDiscovery, setPartialDiscovery] =
+    React.useState<import("@/lib/types").PartialDiscovery | null>(null);
+  // Keyed by opportunityNumber — multiple eligibility checks run in
+  // sequence, so we keep the in-flight partial for each one until the
+  // final step lands.
+  const [partialEligibility, setPartialEligibility] = React.useState<
+    Record<string, import("@/lib/types").PartialEligibility>
+  >({});
   const [elapsed, setElapsed] = React.useState(0);
 
   const [customText, setCustomText] = React.useState("");
@@ -92,6 +100,8 @@ export default function Page() {
 
     setEvents([]);
     setPartialDraft(null);
+    setPartialDiscovery(null);
+    setPartialEligibility({});
     setRun({
       status: "running",
       mode,
@@ -199,18 +209,39 @@ export default function Page() {
               setRun((r) => (r.status === "running" ? { ...r, phase: "summarizing" } : r));
             }
             if (ev.kind === "error") sawError = ev.message;
-            // Drafter streams: track the in-flight partial draft for
-            // progressive rendering. Once the final drafter step lands
-            // in the events array (kind === "step", step.kind === "drafter"),
-            // the partial preview clears.
+            // All three sub-agents stream. We track the in-flight
+            // partial for each, and clear it the moment the final step
+            // event lands so the streaming tile swaps cleanly to the
+            // settled tile without a flash of double-render.
+            if (ev.kind === "discovery-partial") {
+              setPartialDiscovery(ev.partial);
+            } else if (ev.kind === "step" && ev.step.kind === "discovery") {
+              setPartialDiscovery(null);
+            }
+            if (ev.kind === "eligibility-partial") {
+              const oppNum = ev.opportunityNumber;
+              setPartialEligibility((prev) => ({ ...prev, [oppNum]: ev.partial }));
+            } else if (ev.kind === "step" && ev.step.kind === "eligibility") {
+              const oppNum = ev.step.opportunityNumber;
+              setPartialEligibility((prev) => {
+                if (!(oppNum in prev)) return prev;
+                const next = { ...prev };
+                delete next[oppNum];
+                return next;
+              });
+            }
             if (ev.kind === "draft-partial") {
               setPartialDraft({ opportunityNumber: ev.opportunityNumber, partial: ev.partial });
             } else if (ev.kind === "step" && ev.step.kind === "drafter") {
               setPartialDraft(null);
             }
-            // Don't append draft-partial events to the transcript history —
+            // Don't append partial events to the transcript history —
             // they're transient streaming state, not final transcript steps.
-            if (ev.kind !== "draft-partial") {
+            if (
+              ev.kind !== "draft-partial" &&
+              ev.kind !== "discovery-partial" &&
+              ev.kind !== "eligibility-partial"
+            ) {
               setEvents((prev) => [...prev, ev]);
             }
           } catch {
@@ -278,6 +309,8 @@ export default function Page() {
     if (isRunning) return;
     setEvents([]);
     setPartialDraft(null);
+    setPartialDiscovery(null);
+    setPartialEligibility({});
     setCustomErrors({});
     setRun({ status: "idle" });
   }
@@ -287,6 +320,8 @@ export default function Page() {
     setTab(next);
     setEvents([]);
     setPartialDraft(null);
+    setPartialDiscovery(null);
+    setPartialEligibility({});
     setCustomErrors({});
     setRun({ status: "idle" });
   }
@@ -392,7 +427,12 @@ export default function Page() {
         )}
 
         {hasOutput ? (
-          <Transcript events={events} partialDraft={partialDraft} />
+          <Transcript
+            events={events}
+            partialDraft={partialDraft}
+            partialDiscovery={partialDiscovery}
+            partialEligibility={partialEligibility}
+          />
         ) : (
           run.status === "idle" && (
             <EmptyState

@@ -17,8 +17,16 @@
  * the renderer can display verbatim — the planner never throws.
  */
 
-import { discover, type DiscoveryResult } from "../agents/discovery";
-import { check, type EligibilityResult } from "../agents/eligibility";
+import {
+  discover,
+  type DiscoveryResult,
+  type PartialDiscovery,
+} from "../agents/discovery";
+import {
+  check,
+  type EligibilityResult,
+  type PartialEligibility,
+} from "../agents/eligibility";
 import { draft, type DrafterResult, type PartialDraft } from "../agents/drafter";
 import type { SubAgentEnvelope, UserProfile } from "../agents/types";
 
@@ -68,11 +76,18 @@ export async function runPlanner(args: {
   intent: string;
   profile: UserProfile;
   /**
-   * Optional callback for streaming Drafter partials to the caller
-   * (e.g. an HTTP route emitting NDJSON to the browser). Each call
-   * receives the in-flight draft object as it accumulates from
-   * streamObject's partialObjectStream.
+   * Streaming callbacks. Each sub-agent's streamObject pushes partials
+   * here, and the HTTP route forwards them to the browser as NDJSON
+   * events. The portfolio value is showing fluency in all three of the
+   * AI SDK's streaming primitives:
+   *   - streamObject for Discovery + Eligibility (progressive
+   *     structured disclosure)
+   *   - streamText for Drafter (token-by-token prose with tool-use)
+   *   - generateObject elsewhere (when streaming has no UX value, e.g.
+   *     the cheap derive-query step inside Discovery)
    */
+  onDiscoveryPartial?: (partial: PartialDiscovery) => void;
+  onEligibilityPartial?: (partial: PartialEligibility) => void;
   onDrafterPartial?: (partial: PartialDraft, opportunityNumber: string) => void;
 }): Promise<PlannerRun> {
   const steps: TranscriptStep[] = [];
@@ -81,6 +96,7 @@ export async function runPlanner(args: {
   const discoveryEnv = await discover({
     intent: args.intent,
     profile: args.profile,
+    onPartial: args.onDiscoveryPartial,
   });
   steps.push({ kind: "discovery", envelope: discoveryEnv });
 
@@ -119,6 +135,7 @@ export async function runPlanner(args: {
     const env = await check({
       profile: args.profile,
       opportunityNumber: c.opportunityNumber,
+      onPartial: args.onEligibilityPartial,
     });
     steps.push({ kind: "eligibility", opportunityNumber: c.opportunityNumber, envelope: env });
     if (env.result.kind === "verdict") {

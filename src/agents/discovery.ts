@@ -11,15 +11,20 @@
  * "no candidates" result the planner can route on (re-query with
  * loosened terms, or stop).
  *
- * Uses the AI SDK's `generateObject` for structured output: the Zod
- * schema constrains the model's response, the SDK validates + retries
- * on schema failure, and we drop the old hand-rolled JSON parsing.
+ * Two streaming primitives used here:
+ *   - `generateObject` for the cheap derive-query step (~1s, tiny
+ *     output) — no value in streaming a 2-field object.
+ *   - `streamObject` for the ranking step — the model emits each
+ *     ranked entry one at a time, and the UI renders them as they
+ *     arrive so the user sees the shortlist building instead of
+ *     staring at a spinner for 4-6 seconds.
  */
 
-import { generateObject } from "ai";
+import { generateObject, streamObject } from "ai";
 import { z } from "zod";
 
-import { callLadder } from "../agent/fallback-ladder";
+import { anthropic } from "../provider";
+import { callLadder, LADDER, type LadderRung } from "../agent/fallback-ladder";
 import { grantsSearch } from "../tools/grants-search";
 import { provenanceOf, type SubAgentEnvelope, type UserProfile } from "./types";
 
@@ -55,6 +60,27 @@ export type DiscoveryResult =
   | { kind: "empty"; query: string; queryRationale: string }
   | { kind: "error"; message: string };
 
+/**
+ * Partial discovery shape streamed to the UI. `query` + `queryRationale`
+ * are settled before streaming starts (they come from the cheap
+ * derive-query step). `candidates` grows item-by-item as the ranking
+ * `streamObject` emits each ranked entry — title/agency/closeDate are
+ * hydrated from the search response, score + rationale come from the
+ * model.
+ */
+export type PartialDiscovery = {
+  query: string;
+  queryRationale: string;
+  candidates: {
+    opportunityNumber?: string;
+    title?: string;
+    agencyName?: string | null;
+    closeDate?: string | null;
+    score?: number;
+    rationale?: string;
+  }[];
+};
+
 const DERIVE_SYSTEM = `You convert a user's stated goal and business profile into a single grants.gov keyword query.
 
 Guidelines:
@@ -77,6 +103,12 @@ Return ALL candidates, sorted by score descending.`;
 export async function discover(args: {
   intent: string;
   profile: UserProfile;
+  /**
+   * Optional callback fired as the ranking step's `streamObject` emits
+   * each partial ranking. The shape mirrors `PartialDiscovery` — the
+   * caller can render the shortlist filling in entry-by-entry.
+   */
+  onPartial?: (partial: PartialDiscovery) => void;
 }): Promise<SubAgentEnvelope<DiscoveryResult>> {
   // Step 1 — derive the keyword query.
   let deriveLadder;
@@ -142,39 +174,113 @@ export async function discover(args: {
     closeDate: c.closeDate,
   }));
 
-  let rankLadder;
-  try {
-    rankLadder = await callLadder(async (model) => {
-      const r = await generateObject({
+  // Step 3 — rank the candidates against the intent + profile.
+  //
+  // streamObject is used here (not generateObject) so the UI can render
+  // each ranked entry as the model emits it. The candidates array on
+  // PartialDiscovery grows one item at a time. Inline ladder logic
+  // mirrors drafter.ts — streamObject's start→stream→finish lifecycle
+  // doesn't fit callLadder's synchronous result shape.
+  const byNumber = new Map(search.data.candidates.map((c) => [c.opportunityNumber, c]));
+  const rankPrompt = `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}\n\nCandidates:\n${JSON.stringify(candidatesForRanking, null, 2)}`;
+
+  const rankAttempts: { rung: string; error: string }[] = [];
+  let rankRung: LadderRung | null = null;
+  let rankResult:
+    | {
+        ranked: { opportunityNumber: string; score: number; rationale: string }[];
+        latencyMs: number;
+        usage: { inputTokens: number; outputTokens: number };
+        rung: LadderRung;
+      }
+    | null = null;
+
+  for (const rung of LADDER) {
+    rankRung = rung;
+    const startedAt = Date.now();
+    try {
+      const model = anthropic(rung.model);
+      const r = streamObject({
         model,
         schema: RankingSchema,
         system: RANK_SYSTEM,
-        prompt: `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}\n\nCandidates:\n${JSON.stringify(candidatesForRanking, null, 2)}`,
+        prompt: rankPrompt,
         maxRetries: 2,
       });
-      return {
-        result: r.object,
+
+      // Pump partial ranks to the caller, hydrating title/agency from
+      // the search response so the UI can render rich entries even
+      // before the model has finished writing a rationale.
+      if (args.onPartial) {
+        for await (const partial of r.partialObjectStream) {
+          const partialRanked = (partial as { ranked?: unknown }).ranked;
+          const partialCandidates = Array.isArray(partialRanked)
+            ? partialRanked
+                .filter((e): e is Record<string, unknown> => !!e && typeof e === "object")
+                .map((e) => {
+                  const oppNum = typeof e.opportunityNumber === "string" ? e.opportunityNumber : undefined;
+                  const c = oppNum ? byNumber.get(oppNum) : undefined;
+                  return {
+                    opportunityNumber: oppNum,
+                    title: c?.title,
+                    agencyName: c?.agencyName ?? null,
+                    closeDate: c?.closeDate ?? null,
+                    score: typeof e.score === "number" ? e.score : undefined,
+                    rationale: typeof e.rationale === "string" ? e.rationale : undefined,
+                  };
+                })
+            : [];
+          args.onPartial({
+            query: derived.keyword,
+            queryRationale: derived.rationale,
+            candidates: partialCandidates,
+          });
+        }
+      } else {
+        for await (const _ of r.partialObjectStream) {
+          /* drain */
+        }
+      }
+
+      const finalObject = await r.object;
+      const usage = await r.usage;
+      const latencyMs = Date.now() - startedAt;
+      rankResult = {
+        ranked: finalObject.ranked,
+        latencyMs,
         usage: {
-          inputTokens: r.usage.promptTokens ?? 0,
-          outputTokens: r.usage.completionTokens ?? 0,
+          inputTokens: usage.promptTokens ?? 0,
+          outputTokens: usage.completionTokens ?? 0,
         },
-        finishReason: r.finishReason,
+        rung,
       };
-    });
-  } catch (err) {
+      break;
+    } catch (err) {
+      rankAttempts.push({
+        rung: rung.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      // Mirror callLadder's fallback policy: 5xx / 429 / network → fall through.
+      // For other errors, surface immediately.
+      const isApiCallError =
+        err instanceof Error && err.name === "AI_APICallError" || err instanceof Error && err.name === "APICallError";
+      if (!isApiCallError && !(err instanceof Error)) {
+        break;
+      }
+    }
+  }
+
+  if (!rankResult) {
     return {
       result: {
         kind: "error",
-        message: `ranking parse failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `ranking failed across all ladder rungs: ${JSON.stringify(rankAttempts)}`,
       },
       provenance: provenanceOf(deriveLadder),
     };
   }
 
-  const ranked = rankLadder.result;
-
-  const byNumber = new Map(search.data.candidates.map((c) => [c.opportunityNumber, c]));
-  const top = ranked.ranked
+  const top = rankResult.ranked
     .slice()
     .sort((a, b) => b.score - a.score)
     .slice(0, 5)
@@ -190,6 +296,11 @@ export async function discover(args: {
       };
     });
 
+  const rankRungUsed = rankResult.rung;
+  const rankCostUSD =
+    (rankResult.usage.inputTokens / 1_000_000) * rankRungUsed.inputUsdPerMTok +
+    (rankResult.usage.outputTokens / 1_000_000) * rankRungUsed.outputUsdPerMTok;
+
   return {
     result: {
       kind: "candidates",
@@ -199,6 +310,12 @@ export async function discover(args: {
     },
     // Provenance reports the more expensive of the two ladder calls
     // (ranking) — that's the dominant cost for this sub-agent.
-    provenance: provenanceOf(rankLadder),
+    provenance: {
+      rung: rankRungUsed.name,
+      model: rankRungUsed.model,
+      latencyMs: rankResult.latencyMs,
+      costUSD: rankCostUSD,
+      attempts: rankAttempts,
+    },
   };
 }

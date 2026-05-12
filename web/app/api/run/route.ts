@@ -172,14 +172,31 @@ export async function POST(req: NextRequest) {
         // Run the planner. It already emits steps in order; we re-broadcast
         // each one + a phase marker so the UI can render cleanly.
         //
-        // Drafter is the only sub-agent that streams: as the model emits
-        // each new section/watch-out, the planner forwards the partial
-        // draft object here, and we emit it as a `draft-partial` NDJSON
-        // event the UI can use to render progressively (sections
-        // accumulate, prompts fill in, watch-outs appear last).
+        // All three sub-agents stream. The AI SDK exposes three different
+        // streaming primitives, each suited to a different job:
+        //
+        //   - streamObject for Discovery + Eligibility — the Zod schema
+        //     constrains the shape and `partialObjectStream` lets the UI
+        //     render the shortlist building one entry at a time and the
+        //     verdict badge resolving in ~50 tokens.
+        //   - streamText for Drafter — token-by-token prose with mid-
+        //     generation tool calls via maxSteps.
+        //
+        // The planner forwards each sub-agent's partial as it arrives
+        // and we re-emit as NDJSON events the UI accumulates into tiles.
         const run = await runPlanner({
           intent: resolvedIntentText,
           profile: resolvedProfile,
+          onDiscoveryPartial: (partial) => {
+            send({ kind: "discovery-partial", partial });
+          },
+          onEligibilityPartial: (partial) => {
+            send({
+              kind: "eligibility-partial",
+              opportunityNumber: partial.opportunityNumber,
+              partial,
+            });
+          },
           onDrafterPartial: (partial, opportunityNumber) => {
             send({
               kind: "draft-partial",
