@@ -27,15 +27,17 @@ const Tabs = TabsPrimitive.Root;
  */
 const TABS_INLINE_CSS = `
 [data-gp-tabs-list] [data-gp-tabs-trigger] {
-  color: var(--color-muted-foreground, rgb(156 163 175));
+  color: rgb(156 163 175);
 }
 [data-gp-tabs-list] [data-gp-tabs-trigger]:hover {
-  color: var(--color-foreground, rgb(245 241 234));
+  color: rgb(245 241 234);
 }
+[data-gp-tabs-list] [data-gp-tabs-trigger][aria-selected="true"],
 [data-gp-tabs-list] [data-gp-tabs-trigger][data-state="active"] {
   color: #4dffff !important;
-  background-color: rgba(77, 255, 255, 0.14);
+  background-color: rgba(77, 255, 255, 0.14) !important;
 }
+[data-gp-tabs-list] [data-gp-tabs-trigger][aria-selected="true"]::after,
 [data-gp-tabs-list] [data-gp-tabs-trigger][data-state="active"]::after {
   content: "";
   position: absolute;
