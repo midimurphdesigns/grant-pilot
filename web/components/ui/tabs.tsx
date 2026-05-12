@@ -41,20 +41,20 @@ const TabsTrigger = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Trigger
     ref={ref}
+    // The active state is handled in globals.css via the
+    // `[data-state="active"]` attribute selector on this class, NOT via
+    // Tailwind data- modifiers. The Tailwind JIT in v4 was unreliable
+    // about emitting `data-[state=active]:*` utilities for this exact
+    // component (they appeared in the source but never made it into the
+    // generated CSS), so the rule was missing at render time. Real CSS
+    // sidesteps the JIT entirely.
     className={cn(
+      "gp-tabs-trigger",
       "relative inline-flex items-center justify-center whitespace-nowrap px-5 py-2.5 -mb-px",
       "text-xs uppercase tracking-wider font-medium",
-      "text-[var(--color-muted-foreground)]",
       "transition-colors",
-      "hover:text-[var(--color-foreground)]",
       "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ring)]",
       "disabled:pointer-events-none disabled:opacity-40",
-      "data-[state=active]:text-[var(--color-primary)]",
-      "data-[state=active]:bg-[var(--color-primary)]/[0.06]",
-      // The 2px cyan rail. -mb-px on the trigger overlaps the TabsList's
-      // bottom border so the rail visually replaces it for the active tab.
-      "after:absolute after:left-0 after:right-0 after:bottom-0 after:h-[2px] after:bg-transparent",
-      "data-[state=active]:after:bg-[var(--color-primary)]",
       className,
     )}
     {...props}

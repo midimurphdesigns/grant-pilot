@@ -107,6 +107,41 @@ pre {
   outline-offset: 2px;
 }
 
+/* ────────────────────────────────────────────────────────────
+ * Tab triggers — unambiguous active state.
+ *
+ * Tailwind v4's JIT was inconsistent about emitting the
+ * `data-[state=active]:*` utilities for the Radix TabsTrigger
+ * (the rules appeared in the source but never made it into the
+ * generated CSS), so the visible active state was missing.
+ * These plain attribute-selector rules cannot be JIT-stripped.
+ *
+ * Active state layers three signals:
+ *   1. cyan label color
+ *   2. faint cyan tint background
+ *   3. 2px cyan rail along the bottom edge (overlaps the
+ *      TabsList divider via the trigger's -mb-px)
+ * ──────────────────────────────────────────────────────────── */
+.gp-tabs-trigger {
+  color: var(--color-muted-foreground);
+}
+.gp-tabs-trigger:hover {
+  color: var(--color-foreground);
+}
+.gp-tabs-trigger[data-state="active"] {
+  color: var(--color-primary);
+  background-color: rgb(77 255 255 / 0.06);
+}
+.gp-tabs-trigger[data-state="active"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background-color: var(--color-primary);
+}
+
 /* Sonner / toast positioning in dark theme */
 [data-sonner-toaster][data-theme="dark"] {
   --normal-bg: rgb(18 18 20);
