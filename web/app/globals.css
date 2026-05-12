@@ -9,12 +9,28 @@
   --muted: 156 163 175;
 }
 
-/* shadcn/ui design tokens, mapped to the existing palette.
-   We're dark-only — no light variant. Values are in `oklch()` for
-   Tailwind v4 + shadcn compat. */
+/* Design tokens — mirrors kevinmurphywebdev.com so the demo reads as
+   a deliberate extension of the portfolio brand. Three-tier type stack
+   per ADR-023:
+
+   --font-display  Instrument Serif italic  ≥32px display only (h1, h2)
+   --font-body     Space Grotesk            body, nav, all functional UI
+   --font-mono     Geist Mono               metadata (eyebrows, labels, dates)
+
+   Color palette is the portfolio's: near-black canvas, bone ink,
+   electric cyan accent (#4DFFFF). shadcn tokens follow.
+*/
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  /* Portfolio-aligned type stack (the three variables ending in
+     -space-grotesk / -geist-mono / -instrument-serif are injected
+     onto <html> by next/font in lib/fonts.ts). */
+  --font-display: var(--font-instrument-serif), Georgia, "Times New Roman", serif;
+  --font-body: var(--font-space-grotesk), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "Menlo", monospace;
+
+  /* shadcn's `font-sans` token — keep mapped to --font-body so primitives
+     pick up Space Grotesk without per-component overrides. */
+  --font-sans: var(--font-body);
 
   --color-background: rgb(10 10 11);
   --color-foreground: rgb(245 241 234);
@@ -54,13 +70,35 @@ body {
 }
 
 body {
-  font-family: var(--font-sans);
+  font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
 }
 
 code,
 pre {
   font-family: var(--font-mono);
+}
+
+/* Display tier — Instrument Serif italic, ≥32px only. Use the
+   .type-display class on any h1/h2 that should pick up the brand
+   voice. (Sub-32px headings stay in Space Grotesk.) */
+.type-display {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: -0.015em;
+  line-height: 0.95;
+}
+
+/* Metadata tier — Geist Mono uppercase eyebrows, the portfolio's
+   functional-label voice. */
+.type-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
 }
 
 /* Focus-visible: cyan ring on every interactive element. */

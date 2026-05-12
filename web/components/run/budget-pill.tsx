@@ -3,6 +3,7 @@
 import * as React from "react";
 import { Info } from "lucide-react";
 
+import { BreathingDot } from "@/components/ui/breathing-dot";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -12,7 +13,7 @@ import { cn } from "@/lib/utils";
 export function BudgetPill({ budget, loading }: { budget: BudgetStatus | null; loading: boolean }) {
   if (loading || !budget) {
     return (
-      <div className="mt-5 border border-[var(--color-border)] p-3">
+      <div className="border border-[var(--color-border)] p-3">
         <div className="flex items-baseline justify-between gap-3">
           <Skeleton className="h-3 w-40" />
           <Skeleton className="h-3 w-20" />
@@ -50,9 +51,10 @@ export function BudgetPill({ budget, loading }: { budget: BudgetStatus | null; l
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="mt-5 border border-[var(--color-border)] p-3" aria-live="polite">
+      <div className="border border-[var(--color-border)] p-3" aria-live="polite">
         <div className="flex items-baseline justify-between gap-3 text-[10px] uppercase tracking-wider text-[var(--color-muted-foreground)]">
           <div className="flex items-center gap-1.5">
+            {(state === "ok" || state === "moderate") && <BreathingDot />}
             <span>Daily budget — {stateLabel[state]}</span>
             <Tooltip>
               <TooltipTrigger asChild>

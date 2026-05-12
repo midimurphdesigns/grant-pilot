@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { motion } from "framer-motion";
 import { Play } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
@@ -37,12 +38,20 @@ export function PresetGrid({
             >
               <Card
                 className={cn(
-                  "p-4 transition-colors",
+                  "relative p-4 transition-colors",
                   active
-                    ? "border-[var(--color-primary)]"
+                    ? "border-[var(--color-primary)]/40"
                     : "border-[var(--color-border)] group-hover:border-white/30",
                 )}
               >
+                {active && (
+                  <motion.span
+                    layoutId="preset-active-rail"
+                    aria-hidden
+                    className="absolute left-0 top-2 bottom-2 w-[2px] bg-[var(--color-primary)]"
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  />
+                )}
                 <div className="flex items-start gap-3">
                   <span
                     aria-hidden

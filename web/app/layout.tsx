@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { spaceGrotesk, geistMono, instrumentSerif } from "@/lib/fonts";
 import "./globals.css";
 
 const SITE_URL = "https://grant-pilot.kevinmurphywebdev.com";
@@ -41,7 +42,10 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      className={`${spaceGrotesk.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
+    >
       <body>{children}</body>
     </html>
   );

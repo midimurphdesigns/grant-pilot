@@ -13,9 +13,9 @@ const badgeVariants = cva(
         accent:
           "border border-[var(--color-primary)]/40 bg-[var(--color-primary)]/10 text-[var(--color-primary)]",
         success:
-          "border border-emerald-400/40 bg-emerald-400/10 text-emerald-300",
+          "border border-[var(--color-primary)]/40 bg-[var(--color-primary)]/10 text-[var(--color-primary)]",
         warning:
-          "border border-yellow-400/40 bg-yellow-400/10 text-yellow-300",
+          "border border-[var(--color-muted-foreground)]/30 bg-[var(--color-muted-foreground)]/5 text-[var(--color-foreground)]",
         destructive:
           "border border-red-400/40 bg-red-400/10 text-red-300",
         outline: "border border-[var(--color-border)] text-[var(--color-muted-foreground)]",

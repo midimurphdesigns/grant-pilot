@@ -275,36 +275,40 @@ export default function Page() {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <main className="min-h-screen px-4 py-12 sm:px-6 max-w-3xl mx-auto">
-        <header className="mb-10">
-          <h1 className="text-3xl font-semibold tracking-tight mb-2">grant-pilot</h1>
-          <p className="text-sm leading-6 text-[var(--color-muted-foreground)]">
-            An agent that finds federal grants for a small business or nonprofit and drafts an
-            application skeleton. Pick a preset intent or write your own to watch the planner
-            dispatch three sub-agents — discovery, eligibility, drafter — over live grants.gov +
-            SAM.gov data.
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
-            <a
-              href="https://github.com/midimurphdesigns/grant-pilot"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 underline-offset-4 hover:text-[var(--color-foreground)] hover:underline"
-            >
-              <Github className="size-3.5" />
-              github.com/midimurphdesigns/grant-pilot
-            </a>
-            <a
-              href="https://kevinmurphywebdev.com/blog/building-grant-pilot"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 underline-offset-4 hover:text-[var(--color-foreground)] hover:underline"
-            >
-              <ExternalLink className="size-3.5" />
-              Read the blog post
-            </a>
+      <main className="min-h-screen px-4 py-12 sm:px-6 max-w-5xl mx-auto">
+        <header className="mb-10 grid grid-cols-1 lg:grid-cols-12 lg:gap-8">
+          <div className="lg:col-span-8">
+            <h1 className="type-display text-5xl mb-3">grant-pilot</h1>
+            <p className="text-sm leading-6 text-[var(--color-muted-foreground)] max-w-2xl">
+              An agent that finds federal grants for a small business or nonprofit and drafts an
+              application skeleton. Pick a preset intent or write your own to watch the planner
+              dispatch three sub-agents — discovery, eligibility, drafter — over live grants.gov +
+              SAM.gov data.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-muted-foreground)]">
+              <a
+                href="https://github.com/midimurphdesigns/grant-pilot"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 underline-offset-4 hover:text-[var(--color-foreground)] hover:underline"
+              >
+                <Github className="size-3.5" />
+                github.com/midimurphdesigns/grant-pilot
+              </a>
+              <a
+                href="https://kevinmurphywebdev.com/blog/building-grant-pilot"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 underline-offset-4 hover:text-[var(--color-foreground)] hover:underline"
+              >
+                <ExternalLink className="size-3.5" />
+                Read the blog post
+              </a>
+            </div>
           </div>
-          <BudgetPill budget={budget} loading={budgetLoading} />
+          <aside className="lg:col-span-4 mt-6 lg:mt-0 lg:sticky lg:top-6 self-start">
+            <BudgetPill budget={budget} loading={budgetLoading} />
+          </aside>
         </header>
 
         <Tabs value={tab} onValueChange={(v) => switchTab(v as RunMode)} className="mb-6">
