@@ -10,20 +10,18 @@
  * Returns at most 5 candidates. Empty searches surface as a structured
  * "no candidates" result the planner can route on (re-query with
  * loosened terms, or stop).
+ *
+ * Uses the AI SDK's `generateObject` for structured output: the Zod
+ * schema constrains the model's response, the SDK validates + retries
+ * on schema failure, and we drop the old hand-rolled JSON parsing.
  */
 
-import type Anthropic from "@anthropic-ai/sdk";
+import { generateObject } from "ai";
 import { z } from "zod";
 
 import { callLadder } from "../agent/fallback-ladder";
 import { grantsSearch } from "../tools/grants-search";
-import {
-  firstText,
-  parseJsonLoose,
-  provenanceOf,
-  type SubAgentEnvelope,
-  type UserProfile,
-} from "./types";
+import { provenanceOf, type SubAgentEnvelope, type UserProfile } from "./types";
 
 const QueryDerivationSchema = z.object({
   keyword: z.string().min(2).max(200),
@@ -59,56 +57,64 @@ export type DiscoveryResult =
 
 const DERIVE_SYSTEM = `You convert a user's stated goal and business profile into a single grants.gov keyword query.
 
-Output ONLY a JSON object with this exact shape:
-{ "keyword": "<2-200 char query>", "rationale": "<short why>" }
-
 Guidelines:
 - grants.gov uses a strict keyword AND-match — every term in the query must appear in the opportunity. FAVOR FEWER, BROADER TERMS over many specific ones.
 - Use 2-4 words maximum. "infrastructure construction" beats "commercial infrastructure construction Arizona Phoenix small contractor".
 - Drop geography (state names, ZIPs, metros) from the query — grants are filtered by applicant location at eligibility time, not in the keyword index.
 - Drop size qualifiers like "small business" — most opportunities don't use that phrase verbatim.
 - Drop the words "grant" and "funding" — grants.gov already filters to opportunities.
-- Pick terms an agency program officer would actually write into a NOFO title or synopsis.
-- Output JSON only. No prose, no markdown fences.`;
+- Pick terms an agency program officer would actually write into a NOFO title or synopsis.`;
 
 const RANK_SYSTEM = `You rank federal grant opportunities for fit against a stated goal and applicant profile.
-
-Output ONLY a JSON object with this exact shape:
-{ "ranked": [ { "opportunityNumber": "<id>", "score": 0-100, "rationale": "<one sentence>" }, ... ] }
 
 Score guidelines:
 - 80-100: strong fit — opportunity description aligns with intent AND applicant likely qualifies
 - 50-79: plausible fit — relevant theme but eligibility uncertain or partial
 - 0-49: weak fit — keyword match only, likely wrong applicant type / industry / scale
 
-Return ALL candidates, sorted by score descending. Output JSON only. No prose, no markdown fences.`;
+Return ALL candidates, sorted by score descending.`;
 
 export async function discover(args: {
-  client: Anthropic;
   intent: string;
   profile: UserProfile;
 }): Promise<SubAgentEnvelope<DiscoveryResult>> {
   // Step 1 — derive the keyword query.
-  const deriveLadder = await callLadder({
-    client: args.client,
-    systemPrompt: DERIVE_SYSTEM,
-    userMessage: `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}`,
-    maxTokens: 400,
-  });
-
-  let derived: z.infer<typeof QueryDerivationSchema>;
+  let deriveLadder;
   try {
-    const parsed = parseJsonLoose<unknown>(firstText(deriveLadder.rawResponse));
-    derived = QueryDerivationSchema.parse(parsed);
+    deriveLadder = await callLadder(async (model) => {
+      const r = await generateObject({
+        model,
+        schema: QueryDerivationSchema,
+        system: DERIVE_SYSTEM,
+        prompt: `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}`,
+        maxRetries: 2,
+      });
+      return {
+        result: r.object,
+        usage: {
+          inputTokens: r.usage.promptTokens ?? 0,
+          outputTokens: r.usage.completionTokens ?? 0,
+        },
+        finishReason: r.finishReason,
+      };
+    });
   } catch (err) {
     return {
       result: {
         kind: "error",
         message: `query derivation failed: ${err instanceof Error ? err.message : String(err)}`,
       },
-      provenance: provenanceOf(deriveLadder),
+      provenance: {
+        rung: "primary",
+        model: "claude-sonnet-4-6",
+        latencyMs: 0,
+        costUSD: 0,
+        attempts: [],
+      },
     };
   }
+
+  const derived = deriveLadder.result;
 
   // Step 2 — run the grants.gov search.
   const search = await grantsSearch({ keyword: derived.keyword, rows: 10 });
@@ -120,7 +126,10 @@ export async function discover(args: {
       };
     }
     return {
-      result: { kind: "error", message: `grants_search ${search.error.kind}: ${"message" in search.error ? search.error.message : ""}` },
+      result: {
+        kind: "error",
+        message: `grants_search ${search.error.kind}: ${"message" in search.error ? search.error.message : ""}`,
+      },
       provenance: provenanceOf(deriveLadder),
     };
   }
@@ -133,26 +142,36 @@ export async function discover(args: {
     closeDate: c.closeDate,
   }));
 
-  const rankLadder = await callLadder({
-    client: args.client,
-    systemPrompt: RANK_SYSTEM,
-    userMessage: `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}\n\nCandidates:\n${JSON.stringify(candidatesForRanking, null, 2)}`,
-    maxTokens: 2000,
-  });
-
-  let ranked: z.infer<typeof RankingSchema>;
+  let rankLadder;
   try {
-    const parsed = parseJsonLoose<unknown>(firstText(rankLadder.rawResponse));
-    ranked = RankingSchema.parse(parsed);
+    rankLadder = await callLadder(async (model) => {
+      const r = await generateObject({
+        model,
+        schema: RankingSchema,
+        system: RANK_SYSTEM,
+        prompt: `Intent: ${args.intent}\n\nProfile: ${JSON.stringify(args.profile)}\n\nCandidates:\n${JSON.stringify(candidatesForRanking, null, 2)}`,
+        maxRetries: 2,
+      });
+      return {
+        result: r.object,
+        usage: {
+          inputTokens: r.usage.promptTokens ?? 0,
+          outputTokens: r.usage.completionTokens ?? 0,
+        },
+        finishReason: r.finishReason,
+      };
+    });
   } catch (err) {
     return {
       result: {
         kind: "error",
         message: `ranking parse failed: ${err instanceof Error ? err.message : String(err)}`,
       },
-      provenance: provenanceOf(rankLadder),
+      provenance: provenanceOf(deriveLadder),
     };
   }
+
+  const ranked = rankLadder.result;
 
   const byNumber = new Map(search.data.candidates.map((c) => [c.opportunityNumber, c]));
   const top = ranked.ranked

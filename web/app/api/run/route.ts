@@ -13,7 +13,6 @@
  * Response is NDJSON: one JSON object per line.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
@@ -159,8 +158,6 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
-
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
@@ -174,10 +171,22 @@ export async function POST(req: NextRequest) {
       try {
         // Run the planner. It already emits steps in order; we re-broadcast
         // each one + a phase marker so the UI can render cleanly.
+        //
+        // Drafter is the only sub-agent that streams: as the model emits
+        // each new section/watch-out, the planner forwards the partial
+        // draft object here, and we emit it as a `draft-partial` NDJSON
+        // event the UI can use to render progressively (sections
+        // accumulate, prompts fill in, watch-outs appear last).
         const run = await runPlanner({
-          client,
           intent: resolvedIntentText,
           profile: resolvedProfile,
+          onDrafterPartial: (partial, opportunityNumber) => {
+            send({
+              kind: "draft-partial",
+              opportunityNumber,
+              partial,
+            });
+          },
         });
         let lastKind: string | null = null;
         for (const step of run.steps) {

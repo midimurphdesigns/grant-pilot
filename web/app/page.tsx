@@ -31,6 +31,10 @@ export default function Page() {
   const [tab, setTab] = React.useState<RunMode>("preset");
   const [run, setRun] = React.useState<RunState>({ status: "idle" });
   const [events, setEvents] = React.useState<StepEvent[]>([]);
+  const [partialDraft, setPartialDraft] = React.useState<{
+    opportunityNumber: string;
+    partial: import("@/lib/types").PartialDraft;
+  } | null>(null);
   const [elapsed, setElapsed] = React.useState(0);
 
   const [customText, setCustomText] = React.useState("");
@@ -87,6 +91,7 @@ export default function Page() {
     abortRef.current = ctrl;
 
     setEvents([]);
+    setPartialDraft(null);
     setRun({
       status: "running",
       mode,
@@ -194,7 +199,20 @@ export default function Page() {
               setRun((r) => (r.status === "running" ? { ...r, phase: "summarizing" } : r));
             }
             if (ev.kind === "error") sawError = ev.message;
-            setEvents((prev) => [...prev, ev]);
+            // Drafter streams: track the in-flight partial draft for
+            // progressive rendering. Once the final drafter step lands
+            // in the events array (kind === "step", step.kind === "drafter"),
+            // the partial preview clears.
+            if (ev.kind === "draft-partial") {
+              setPartialDraft({ opportunityNumber: ev.opportunityNumber, partial: ev.partial });
+            } else if (ev.kind === "step" && ev.step.kind === "drafter") {
+              setPartialDraft(null);
+            }
+            // Don't append draft-partial events to the transcript history —
+            // they're transient streaming state, not final transcript steps.
+            if (ev.kind !== "draft-partial") {
+              setEvents((prev) => [...prev, ev]);
+            }
           } catch {
             // skip malformed line
           }
@@ -259,6 +277,7 @@ export default function Page() {
   function clearOutput() {
     if (isRunning) return;
     setEvents([]);
+    setPartialDraft(null);
     setCustomErrors({});
     setRun({ status: "idle" });
   }
@@ -267,6 +286,7 @@ export default function Page() {
     if (isRunning || tab === next) return;
     setTab(next);
     setEvents([]);
+    setPartialDraft(null);
     setCustomErrors({});
     setRun({ status: "idle" });
   }
@@ -372,7 +392,7 @@ export default function Page() {
         )}
 
         {hasOutput ? (
-          <Transcript events={events} />
+          <Transcript events={events} partialDraft={partialDraft} />
         ) : (
           run.status === "idle" && (
             <EmptyState

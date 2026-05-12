@@ -17,11 +17,9 @@
  * the renderer can display verbatim — the planner never throws.
  */
 
-import type Anthropic from "@anthropic-ai/sdk";
-
 import { discover, type DiscoveryResult } from "../agents/discovery";
 import { check, type EligibilityResult } from "../agents/eligibility";
-import { draft, type DrafterResult } from "../agents/drafter";
+import { draft, type DrafterResult, type PartialDraft } from "../agents/drafter";
 import type { SubAgentEnvelope, UserProfile } from "../agents/types";
 
 const MIN_SCORE_FOR_ELIGIBILITY = 30;
@@ -67,15 +65,20 @@ export type PlannerRun = {
 };
 
 export async function runPlanner(args: {
-  client: Anthropic;
   intent: string;
   profile: UserProfile;
+  /**
+   * Optional callback for streaming Drafter partials to the caller
+   * (e.g. an HTTP route emitting NDJSON to the browser). Each call
+   * receives the in-flight draft object as it accumulates from
+   * streamObject's partialObjectStream.
+   */
+  onDrafterPartial?: (partial: PartialDraft, opportunityNumber: string) => void;
 }): Promise<PlannerRun> {
   const steps: TranscriptStep[] = [];
 
   // Step 1 — discovery.
   const discoveryEnv = await discover({
-    client: args.client,
     intent: args.intent,
     profile: args.profile,
   });
@@ -114,7 +117,6 @@ export async function runPlanner(args: {
   const verdicts = new Map<string, EligibilityResult & { kind: "verdict" }>();
   for (const c of toCheck) {
     const env = await check({
-      client: args.client,
       profile: args.profile,
       opportunityNumber: c.opportunityNumber,
     });
@@ -154,9 +156,11 @@ export async function runPlanner(args: {
 
   // Step 4 — draft.
   const draftEnv = await draft({
-    client: args.client,
     profile: args.profile,
     opportunityNumber: target.opportunityNumber,
+    onPartial: args.onDrafterPartial
+      ? (partial) => args.onDrafterPartial!(partial, target.opportunityNumber)
+      : undefined,
   });
   steps.push({ kind: "drafter", opportunityNumber: target.opportunityNumber, envelope: draftEnv });
 

@@ -8,8 +8,6 @@
  * Run:  bun run smoke
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-
 import { runPlanner } from "./agent/planner";
 import type { UserProfile } from "./agents/types";
 import { renderTranscript } from "./eval/render";
@@ -44,13 +42,10 @@ async function main() {
     process.exit(1);
   }
 
-  const client = new Anthropic({ apiKey });
-
   console.log(`> Intent: ${DEFAULT_INTENT}`);
   console.log("> Running planner...\n");
 
   const run = await runPlanner({
-    client,
     intent: DEFAULT_INTENT,
     profile: DEFAULT_PROFILE,
   });

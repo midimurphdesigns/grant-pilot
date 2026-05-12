@@ -9,21 +9,20 @@
  * Optionally checks SAM.gov registration if profile.uei is set —
  * unregistered orgs cannot receive most federal grants regardless of
  * other eligibility criteria.
+ *
+ * Uses the AI SDK's `generateObject` for structured output: the Zod
+ * VerdictSchema constrains the model's response, the SDK validates +
+ * retries on schema failure, and we drop the old hand-rolled JSON
+ * parsing.
  */
 
-import type Anthropic from "@anthropic-ai/sdk";
+import { generateObject } from "ai";
 import { z } from "zod";
 
 import { callLadder } from "../agent/fallback-ladder";
 import { grantDetail } from "../tools/grant-detail";
 import { entityLookup } from "../tools/entity-lookup";
-import {
-  firstText,
-  parseJsonLoose,
-  provenanceOf,
-  type SubAgentEnvelope,
-  type UserProfile,
-} from "./types";
+import { provenanceOf, type SubAgentEnvelope, type UserProfile } from "./types";
 
 const VerdictSchema = z.object({
   verdict: z.enum(["pass", "fail", "uncertain"]),
@@ -51,23 +50,13 @@ export type EligibilityResult =
 
 const SYSTEM = `You assess whether a specific applicant is eligible for a specific federal grant opportunity.
 
-Output ONLY a JSON object with this exact shape:
-{
-  "verdict": "pass" | "fail" | "uncertain",
-  "reasons": [ "<grounded in eligibility text>", ... ],
-  "blockers": [ "<hard disqualifiers, if any>", ... ],
-  "notes": "<short caveats or recommended next steps>"
-}
-
 Guidelines:
 - "pass" = applicant clearly satisfies all stated eligibility criteria
 - "fail" = applicant clearly violates one or more hard criteria (wrong applicant type, wrong industry, wrong geography, registration lapsed)
 - "uncertain" = eligibility text is ambiguous, applicant data is incomplete, or criteria require judgment beyond what the profile contains
-- Cite the eligibility text, not your priors. If the text doesn't address an attribute, say so in notes.
-- Output JSON only. No prose, no markdown fences.`;
+- Cite the eligibility text, not your priors. If the text doesn't address an attribute, say so in notes.`;
 
 export async function check(args: {
-  client: Anthropic;
   profile: UserProfile;
   opportunityNumber: string;
 }): Promise<SubAgentEnvelope<EligibilityResult>> {
@@ -135,26 +124,42 @@ export async function check(args: {
     detail.data.description ?? "(none)",
   ].join("\n");
 
-  const ladder = await callLadder({
-    client: args.client,
-    systemPrompt: SYSTEM,
-    userMessage,
-    maxTokens: 1500,
-  });
-
-  let verdict: z.infer<typeof VerdictSchema>;
+  let ladder;
   try {
-    const parsed = parseJsonLoose<unknown>(firstText(ladder.rawResponse));
-    verdict = VerdictSchema.parse(parsed);
+    ladder = await callLadder(async (model) => {
+      const r = await generateObject({
+        model,
+        schema: VerdictSchema,
+        system: SYSTEM,
+        prompt: userMessage,
+        maxRetries: 2,
+      });
+      return {
+        result: r.object,
+        usage: {
+          inputTokens: r.usage.promptTokens ?? 0,
+          outputTokens: r.usage.completionTokens ?? 0,
+        },
+        finishReason: r.finishReason,
+      };
+    });
   } catch (err) {
     return {
       result: {
         kind: "error",
-        message: `verdict parse failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `verdict generation failed: ${err instanceof Error ? err.message : String(err)}`,
       },
-      provenance: provenanceOf(ladder),
+      provenance: {
+        rung: "primary",
+        model: "claude-sonnet-4-6",
+        latencyMs: 0,
+        costUSD: 0,
+        attempts: [],
+      },
     };
   }
+
+  const verdict = ladder.result;
 
   // If SAM is checked and inactive, hoist that into blockers regardless
   // of what the model said — registration status is a hard gate.

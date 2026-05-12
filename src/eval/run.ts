@@ -8,8 +8,6 @@
  * Records are keyed by intent id; the latest record for an id wins.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
-
 import { runPlanner } from "../agent/planner";
 import { loadIntents } from "./intents";
 import { scoreRun } from "./scorer";
@@ -54,13 +52,12 @@ async function main() {
     console.error("ANTHROPIC_API_KEY not set. Use `bun run demo` (--replay) for the no-key path.");
     process.exit(1);
   }
-  const client = new Anthropic({ apiKey });
 
   let pass = 0;
   let totalCost = 0;
   for (const intent of intents) {
     console.log(`\n--- live: ${intent.id} ---`);
-    const run = await runPlanner({ client, intent: intent.intent, profile: intent.profile });
+    const run = await runPlanner({ intent: intent.intent, profile: intent.profile });
     console.log(renderTranscript(run));
     if (mode === "record") {
       recordRun(intent.id, run);

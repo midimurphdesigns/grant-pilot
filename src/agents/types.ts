@@ -48,7 +48,7 @@ export type SubAgentEnvelope<T> = {
   };
 };
 
-export function provenanceOf(ladder: LadderResponse): SubAgentEnvelope<unknown>["provenance"] {
+export function provenanceOf<T>(ladder: LadderResponse<T>): SubAgentEnvelope<unknown>["provenance"] {
   return {
     rung: ladder.rung.name,
     model: ladder.rung.model,

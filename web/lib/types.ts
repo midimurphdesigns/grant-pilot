@@ -133,10 +133,26 @@ export type Summary = {
   totalLatencyMs: number;
 };
 
+/**
+ * In-flight shape of the Drafter sub-agent's output as it streams.
+ * Mirrors `PartialDraft` from src/agents/drafter.ts — every field
+ * optional because the model emits them progressively.
+ */
+export type PartialDraft = {
+  summary?: string;
+  sections?: {
+    heading?: string;
+    guidance?: string;
+    promptsForApplicant?: string[];
+  }[];
+  watchOuts?: string[];
+};
+
 export type StepEvent =
   | { kind: "meta"; mode: "live" | "replay"; intent: PresetIntent; isCustom?: boolean }
   | { kind: "phase"; phase: "discovery" | "eligibility" | "drafter" }
   | { kind: "step"; step: AnyStep }
+  | { kind: "draft-partial"; opportunityNumber: string; partial: PartialDraft }
   | { kind: "summary"; summary: Summary }
   | { kind: "error"; message: string };
 
