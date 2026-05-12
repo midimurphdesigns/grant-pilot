@@ -107,47 +107,12 @@ pre {
   outline-offset: 2px;
 }
 
-/* ────────────────────────────────────────────────────────────
- * Tab triggers — unambiguous active state.
- *
- * Tailwind v4's JIT was inconsistent about emitting the
- * `data-[state=active]:*` utilities for the Radix TabsTrigger
- * (the rules appeared in the source but never made it into the
- * generated CSS), so the visible active state was missing.
- * These plain attribute-selector rules cannot be JIT-stripped.
- *
- * Active state layers three signals:
- *   1. cyan label color
- *   2. faint cyan tint background
- *   3. 2px cyan rail along the bottom edge (overlaps the
- *      TabsList divider via the trigger's -mb-px)
- * ──────────────────────────────────────────────────────────── */
-.gp-tabs-trigger {
-  color: var(--color-muted-foreground);
-}
-.gp-tabs-trigger:hover {
-  color: var(--color-foreground);
-}
-/* Active state: strongly visible. The earlier 6%-tint approach was
-   imperceptible on near-black; bumped to 14% so the active tab
-   visually pops. The label color uses !important because the
-   utility classes on the trigger (text-xs etc.) can specificity-
-   tie with our attribute selector; !important is the simplest
-   way to win consistently without a brittle specificity contest. */
-.gp-tabs-trigger[data-state="active"] {
-  color: var(--color-primary) !important;
-  background-color: rgb(77 255 255 / 0.14);
-}
-.gp-tabs-trigger[data-state="active"]::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 3px;
-  background-color: var(--color-primary);
-  box-shadow: 0 0 8px rgb(77 255 255 / 0.5);
-}
+/* Tab trigger active-state styling lives inline in
+ * web/components/ui/tabs.tsx as a <style> tag rendered next to the
+ * TabsList. Inline because the external-CSS version was rendering
+ * correctly in the build but somehow not applying in browsers (likely
+ * cache-related), and inline-style ships in the HTML payload so it
+ * cannot be cache-stale relative to the page it controls. */
 
 /* Sonner / toast positioning in dark theme */
 [data-sonner-toaster][data-theme="dark"] {

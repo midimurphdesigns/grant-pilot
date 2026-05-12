@@ -7,18 +7,63 @@ import { cn } from "@/lib/utils";
 
 const Tabs = TabsPrimitive.Root;
 
+/**
+ * Tab active-state styling is rendered as an inline <style> tag inside
+ * TabsList. Plain stylesheet rules in globals.css were not applying
+ * reliably on the deployed grant-pilot.kevinmurphywebdev.com — verified
+ * the rules were in the built CSS and the HTML referenced the right
+ * file, but the styles didn't render in the browser anyway (most
+ * likely a stale local cache that no amount of hard-reload would
+ * clear because the asset hash kept getting re-shipped under the same
+ * client-side cache key).
+ *
+ * Inline <style> is the nuclear option: the rules ship inside the HTML
+ * payload itself, bypass any external stylesheet caching entirely, and
+ * cannot be overridden by an earlier-cached version of globals.css
+ * because they're not in globals.css.
+ *
+ * The styles are namespaced under `data-gp-tabs-list` so they only
+ * affect the triggers that are descendants of THIS TabsList instance.
+ */
+const TABS_INLINE_CSS = `
+[data-gp-tabs-list] [data-gp-tabs-trigger] {
+  color: var(--color-muted-foreground, rgb(156 163 175));
+}
+[data-gp-tabs-list] [data-gp-tabs-trigger]:hover {
+  color: var(--color-foreground, rgb(245 241 234));
+}
+[data-gp-tabs-list] [data-gp-tabs-trigger][data-state="active"] {
+  color: #4dffff !important;
+  background-color: rgba(77, 255, 255, 0.14);
+}
+[data-gp-tabs-list] [data-gp-tabs-trigger][data-state="active"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  background-color: #4dffff;
+  box-shadow: 0 0 10px rgba(77, 255, 255, 0.6);
+}
+`.trim();
+
 const TabsList = React.forwardRef<
   React.ComponentRef<typeof TabsPrimitive.List>,
   React.ComponentPropsWithoutRef<typeof TabsPrimitive.List>
 >(({ className, ...props }, ref) => (
-  <TabsPrimitive.List
-    ref={ref}
-    className={cn(
-      "relative inline-flex items-stretch border-b border-[var(--color-border)]",
-      className,
-    )}
-    {...props}
-  />
+  <>
+    <style dangerouslySetInnerHTML={{ __html: TABS_INLINE_CSS }} />
+    <TabsPrimitive.List
+      ref={ref}
+      data-gp-tabs-list=""
+      className={cn(
+        "relative inline-flex items-stretch border-b border-[var(--color-border)]",
+        className,
+      )}
+      {...props}
+    />
+  </>
 ));
 TabsList.displayName = TabsPrimitive.List.displayName;
 
@@ -41,15 +86,8 @@ const TabsTrigger = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Trigger
     ref={ref}
-    // The active state is handled in globals.css via the
-    // `[data-state="active"]` attribute selector on this class, NOT via
-    // Tailwind data- modifiers. The Tailwind JIT in v4 was unreliable
-    // about emitting `data-[state=active]:*` utilities for this exact
-    // component (they appeared in the source but never made it into the
-    // generated CSS), so the rule was missing at render time. Real CSS
-    // sidesteps the JIT entirely.
+    data-gp-tabs-trigger=""
     className={cn(
-      "gp-tabs-trigger",
       "relative inline-flex items-center justify-center whitespace-nowrap px-5 py-2.5 -mb-px",
       "text-xs uppercase tracking-wider font-medium",
       "transition-colors",
