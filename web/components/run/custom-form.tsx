@@ -39,6 +39,91 @@ const ENTITY_TYPES: Array<[CustomProfile["entityType"], string]> = [
   ["tribal", "Tribal entity"],
 ];
 
+/**
+ * Prefill examples — three real-shaped starting points the visitor
+ * can tweak instead of filling the whole form from scratch. Mirrors
+ * three of the eval-set preset intents intentionally; this is a UX
+ * affordance, not data of record.
+ */
+type PrefillExample = {
+  id: string;
+  label: string;
+  intent: string;
+  profile: CustomProfile;
+};
+
+const PREFILL_EXAMPLES: PrefillExample[] = [
+  {
+    id: "az-construction",
+    label: "AZ construction firm",
+    intent:
+      "I run a 12-person construction firm in Arizona. What infrastructure-related federal grants might fit?",
+    profile: {
+      naicsCode: "236220",
+      employeeCount: 12,
+      annualRevenueUSD: 2_400_000,
+      state: "AZ",
+      zip: "85004",
+      ownership: {
+        womanOwned: false,
+        veteranOwned: false,
+        minorityOwned: false,
+        disadvantaged: false,
+      },
+      entityType: "for-profit",
+      yearsInOperation: 6,
+      missionDescription:
+        "General contracting focused on small-to-mid commercial infrastructure work across the Phoenix metro area.",
+    },
+  },
+  {
+    id: "vt-nonprofit",
+    label: "VT workforce nonprofit",
+    intent:
+      "Our 9-person nonprofit in Vermont runs job training for young adults aging out of foster care. Looking for workforce-development grants.",
+    profile: {
+      naicsCode: "611430",
+      employeeCount: 9,
+      annualRevenueUSD: 850_000,
+      state: "VT",
+      zip: "05401",
+      ownership: {
+        womanOwned: false,
+        veteranOwned: false,
+        minorityOwned: false,
+        disadvantaged: false,
+      },
+      entityType: "nonprofit",
+      yearsInOperation: 11,
+      missionDescription:
+        "Provides paid 12-week vocational training cohorts to 18-24 year olds transitioning out of foster care, with wraparound case management and employer placement.",
+    },
+  },
+  {
+    id: "tx-cyber",
+    label: "TX woman-owned cyber consultancy",
+    intent:
+      "My woman-owned cybersecurity consultancy in Texas has 8 employees and $1.2M revenue. Any SBA innovation grants?",
+    profile: {
+      naicsCode: "541512",
+      employeeCount: 8,
+      annualRevenueUSD: 1_200_000,
+      state: "TX",
+      zip: "75201",
+      ownership: {
+        womanOwned: true,
+        veteranOwned: false,
+        minorityOwned: false,
+        disadvantaged: false,
+      },
+      entityType: "for-profit",
+      yearsInOperation: 4,
+      missionDescription:
+        "Cybersecurity advisory and penetration-testing services for mid-market enterprises, with a research interest in supply-chain attack detection.",
+    },
+  },
+];
+
 export function CustomForm({
   intent,
   profile,
@@ -64,9 +149,36 @@ export function CustomForm({
   const missionRemaining = CUSTOM_MISSION_MAX_CHARS - (profile.missionDescription?.length ?? 0);
   const intentValid = intent.trim().length >= CUSTOM_INTENT_MIN_CHARS;
 
+  function prefill(example: PrefillExample) {
+    onIntentChange(example.intent);
+    onProfileChange(example.profile);
+  }
+
   return (
     <fieldset disabled={disabled} className={disabled ? "opacity-60" : ""}>
       <div className="space-y-6">
+        {/* Prefill bar — three real-shaped starting points the visitor
+            can tweak. Reduces the cold-start of "fill out 9 fields
+            from scratch" to "pick one, edit what's different." */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] pb-4">
+          <span className="type-eyebrow text-[var(--color-muted-foreground)] mr-1">
+            Prefill with
+          </span>
+          {PREFILL_EXAMPLES.map((ex) => (
+            <Button
+              key={ex.id}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => prefill(ex)}
+              disabled={disabled}
+              className="text-xs"
+            >
+              {ex.label}
+            </Button>
+          ))}
+        </div>
+
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label htmlFor="custom-intent">Describe your funding need</Label>
