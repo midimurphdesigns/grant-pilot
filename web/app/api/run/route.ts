@@ -162,6 +162,10 @@ export async function POST(req: NextRequest) {
   }
 
   if (!process.env.ANTHROPIC_API_KEY) {
+    // No live key configured. Refund the reservation we just took —
+    // the request is being short-circuited before any model spend can
+    // happen, so the reservation has no actual cost behind it.
+    await reconcileSpend(reservation.reservedUSD, 0);
     if (isCustom) {
       return NextResponse.json(
         { error: "no-key", reason: "Live mode is not configured on this deployment." },
@@ -244,9 +248,18 @@ export async function POST(req: NextRequest) {
         // already counted at this point either way.
         await reconcileSpend(reservation.reservedUSD, run.summary.totalCostUSD);
       } catch (err) {
+        // Log the real error server-side for debugging; return a
+        // generic message to the client. Library internals, file paths,
+        // and provider-specific error envelopes occasionally surface
+        // through err.message — none of those help a legitimate user,
+        // and they're free reconnaissance for anyone scanning the
+        // surface for an attack vector.
+        console.error("[/api/run] stream error:", err);
         send({
           kind: "error",
-          message: err instanceof Error ? err.message : String(err),
+          message:
+            "The run failed before completing. The error has been logged. " +
+            "Try a preset intent if you were using a custom one, or refresh and try again.",
         });
         // Run failed mid-stream. Refund the reservation since no actual
         // spend was committed (or only a partial amount we can't easily
