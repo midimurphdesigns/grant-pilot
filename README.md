@@ -24,11 +24,11 @@ It's also a portfolio piece. The shape — planner + sub-agents + tool calls + f
 
 | Path | Needs | Time |
 |------|-------|------|
-| **Hosted demo** at `grant-pilot.kevinmurphywebdev.com` | nothing | ~15s live, ~1s on replay |
+| **Hosted demo** at `grant-pilot.kevinmurphywebdev.com` | nothing | ~30–60s live, instant on replay |
 | **Local replay** (`bun run demo`) | this repo cloned | ~1s |
-| **Local live** (`bun run smoke` / `bun run eval`) | `ANTHROPIC_API_KEY` + `SAM_GOV_API_KEY` in `.env` | ~10–60s per intent |
+| **Local live** (`bun run smoke` / `bun run eval`) | `ANTHROPIC_API_KEY` + `SAM_GOV_API_KEY` in `.env` | ~30–60s per intent |
 
-Hosted is the path most visitors will take. Local replay is for anyone who wants to read the recorded transcript without touching keys. Local live is for anyone who wants to run their own intent.
+Hosted is the path most visitors will take — five preset intents plus a custom-intent form with a bounded organization profile, all behind a daily budget cap with graceful fallback to recorded runs when the cap is hit. Local replay is for anyone who wants to read the recorded transcripts without touching keys. Local live is for anyone who wants to run their own intent from the CLI.
 
 ---
 
@@ -88,7 +88,7 @@ Total cost for that run: $0.05. Total wall time: ~66s. The hosted demo replays t
 intent + profile
    │
    ▼
-planner (bounded multi-turn loop)
+planner (bounded multi-turn loop, code — never throws)
    ├─→ discovery   →  grants_search (grants.gov)
    ├─→ eligibility →  grant_detail + entity_lookup (grants.gov + SAM.gov)
    └─→ drafter     →  grant_detail
@@ -97,15 +97,29 @@ planner (bounded multi-turn loop)
 PlannerRun = { steps: TranscriptStep[], summary }
 ```
 
-Three sub-agents, deliberately. Adding more would be framework creep without commensurate user value at v0.1. The cap itself is the signal — see [`docs/DECISIONS.md`](docs/DECISIONS.md) ADR-003.
+Three sub-agents, deliberately. Adding more would be framework creep without commensurate user value. The cap itself is the signal — see [`docs/DECISIONS.md`](docs/DECISIONS.md) ADR-003.
+
+The planner is **code, not a model**. The "deterministic boundary that never throws and routes failures as values" story is load-bearing for this project. An LLM-driven orchestrator with `streamText({ tools, maxSteps })` is the right primitive for some products; it's the wrong primitive for one where determinism at the orchestration layer is the whole pitch.
+
+### Vercel AI SDK — three streaming primitives, three jobs
+
+The agent stack runs on the [Vercel AI SDK](https://sdk.vercel.ai) (`ai@^4` + `@ai-sdk/anthropic`). The project originally shipped on the raw Anthropic SDK and was ported once the case for the abstraction was clear — see the [migration writeup](https://kevinmurphywebdev.com/blog/building-grant-pilot) for why.
+
+Each sub-agent picks the primitive that fits its job:
+
+- **`streamText` with tools and `maxSteps`** runs the **Drafter** sub-agent's prose tier. Drafter writes English sentences inside structured fields and may call `grant_detail` mid-generation. `streamText` is the only primitive that streams tokens AND supports tool-use loops in the same call.
+- **`streamObject` with a Zod schema** runs **Discovery's ranking step** and **Eligibility's verdict step**. Both have structured outputs whose individual entries — a ranked candidate, a reason, a blocker — are independently meaningful before the full object lands. The UI builds the shortlist entry-by-entry as the model emits each ranked item; the pass / fail / uncertain verdict resolves in the first ~50 tokens of the stream.
+- **`generateObject`** runs **Discovery's cheap query-derivation step** — a two-field object (`keyword`, `rationale`) that resolves in about a second. Streaming a two-field response is complexity for no UX win. Plain `generateObject` is the right default.
+
+Picking the right primitive for each call turned out to be most of the job.
 
 ### Per-sub-agent fallback ladder
 
-Each sub-agent's model calls go through `callLadder` (Sonnet 4.6 → Haiku 4.5). On rate-limit / 5xx / network failure, it falls through; 4xx other than 429 surfaces as a real error (that's a bug in our harness, not provider degradation). Provenance — which rung answered, latency, cost — comes back with every response and shows up in the transcript. Ported from fedbench.
+Each sub-agent's model calls go through `callLadder` (Sonnet 4.6 → Haiku 4.5). On rate-limit / 5xx / network failure, it falls through; 4xx other than 429 surfaces as a real error (that's a bug in our harness, not provider degradation). Provenance — which rung answered, latency, cost — comes back with every response and shows up in the transcript. Ported from fedbench. Sub-agents that use `streamObject` / `streamText` inline the ladder iteration because those primitives' start→stream→finish lifecycle doesn't fit `callLadder`'s synchronous shape; same fallback policy, same cost math, different control flow.
 
 ### Structured failures, not exceptions
 
-The planner never throws. Sub-agent failures, search-API errors, JSON parse failures all become `TranscriptStep` entries the renderer and the recorder both consume. This is what production-shape agent code looks like.
+The planner never throws. Sub-agent failures, search-API errors, schema-validation failures all become `TranscriptStep` entries the renderer and the recorder both consume. This is what production-shape agent code looks like.
 
 ### SAM.gov is a hard gate
 
@@ -117,22 +131,30 @@ The drafter sub-agent emits section headings + per-section guidance + applicant-
 
 ### Single source of truth for intents
 
-`eval/intents.jsonl` powers three things at once: the eval set, the hosted-demo allowlist, and the recording manifest. Adding a new demo intent is a one-line change. The demo can never offer an intent the eval doesn't cover.
+`eval/intents.jsonl` powers three things at once: the eval set, the hosted-demo preset allowlist, and the recording manifest. Adding a new demo intent is a one-line change. The demo can never offer an intent the eval doesn't cover.
 
 ### Hosted-demo guardrails
 
-The hosted demo (Phase H, in `web/`) accepts only the 5 fixed allowlisted intents — no free-form input from strangers. A daily budget cap (`BUDGET_MAX_USD_PER_DAY=3` by default) and a per-IP rate limit (5 runs/hour) protect against runaway cost. When the cap is hit, the demo gracefully falls back to the recorded run for the requested intent with a banner explaining why.
+The hosted demo (in `web/`) is a public surface backed by a paid LLM endpoint. Hardened accordingly:
+
+- **Atomic daily budget cap.** Every run pre-reserves an upper-bound spend ($0.30) via Redis `INCRBYFLOAT` *before* executing the agent, then reconciles to the actual cost after. Concurrent callers serialize on the atomic command, so no two requests can both observe a sub-cap counter and both proceed. Default cap is `$3/day` (`BUDGET_MAX_USD_PER_DAY`).
+- **Graceful replay fallback.** When the cap is hit, preset intents fall back to the recorded run with a banner explaining why. The demo never goes dark; the bill never goes vertical. Custom-intent runs refuse (no recording to fall back to).
+- **Per-IP sliding-window rate limit** (5 runs/hour) keyed on **Vercel-signed `x-vercel-forwarded-for`**, not the user-controlled `x-forwarded-for` header. Spoofing the chain doesn't rotate the bucket.
+- **Fail-closed posture.** If Upstash is missing or unreachable in production, both the rate limiter and the budget cap refuse the request (returns 429 / 503 / replay). A silently-disabled guard on a paid LLM endpoint is the kind of mistake that ends a side project on a Tuesday morning.
+- **Bounded custom-intent inputs.** Every field is constrained: NAICS regex-validated, state is an enum, ZIP is a regex, mission-description is length-capped. The only free-text surface is the intent itself, and both the intent and mission-description run through a heuristic prompt-injection filter (`web/lib/allowlist.ts`) before the planner ever sees them.
+- **Security headers.** HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, a strict `Permissions-Policy` disabling every browser API the demo doesn't use, and a `Content-Security-Policy` scoped to `'self'` plus Vercel Insights. `frame-ancestors 'none'` + `object-src 'none'`, no `unsafe-eval`.
+- **Sanitized streamed error messages.** The streaming endpoint never forwards raw `err.message` to the client — logs server-side via `console.error`, returns a generic message.
 
 ---
 
 ## Stack
 
 - **Bun** + **TypeScript strict** (no `any`)
-- **Anthropic SDK** — Sonnet 4.6 primary, Haiku 4.5 fallback
-- **Zod** at every external boundary
+- **Vercel AI SDK** (`ai@^4` + `@ai-sdk/anthropic`) — Sonnet 4.6 primary, Haiku 4.5 fallback, with `streamText` for Drafter, `streamObject` for Discovery + Eligibility, `generateObject` for the cheap derive-query step
+- **Zod** at every external boundary, used as the constrained-output schema for all `generateObject` / `streamObject` calls
 - **grants.gov Search v2 + fetchOpportunity** (public, unauthenticated)
 - **SAM.gov Entity API v3** (real integration, requires `SAM_GOV_API_KEY`)
-- **Next.js 16 + Vercel + Upstash Redis** for the hosted demo (Phase H)
+- **Next.js 16 + Vercel + Upstash Redis** for the hosted demo (NDJSON streaming, atomic budget reservation, per-IP rate limit)
 - **MIT** licensed
 
 ---
@@ -141,21 +163,23 @@ The hosted demo (Phase H, in `web/`) accepts only the 5 fixed allowlisted intent
 
 See [`CLAUDE.md`](CLAUDE.md) for the file-by-file map. The short version:
 
-- `src/agent/` — planner + fallback ladder
-- `src/agents/` — three sub-agents
+- `src/agent/` — planner + fallback ladder + AI SDK provider
+- `src/agents/` — three sub-agents (discovery, eligibility, drafter)
 - `src/tools/` — three Zod-validated tool clients + MCP-style registry
 - `src/eval/` — intent loader, recording layer, scorer, runner
 - `eval/` — JSONL intents and recorded runs
-- `web/` — hosted-demo Next.js app (Phase H)
+- `web/` — hosted-demo Next.js app (streaming endpoint, transcript UI, budget guards)
 - `docs/` — ARCHITECTURE, DECISIONS (ADR log), DESIGN_NOTES, memory entries
 
 ---
 
 ## Status
 
-**v0.0.1.** Phases A–E (scaffolding through docs and CI) complete. Phase H (hosted demo) and Phase F (resume + blog post) are tracked separately.
+**Shipped.** Hosted demo is live at [grant-pilot.kevinmurphywebdev.com](https://grant-pilot.kevinmurphywebdev.com), the Vercel AI SDK migration is complete (all three streaming primitives wired across the sub-agents), and the security hardening pass (atomic budget reservation, fail-closed guards, Vercel-signed IP, CSP) has landed. Full writeup at [Building grant-pilot](https://kevinmurphywebdev.com/blog/building-grant-pilot).
 
 `bun run typecheck` — clean. `bun run demo` — replays five intents from the recording. `bun run eval` — re-runs live and re-scores. CI runs typecheck + the no-key replay path on every push.
+
+The repo is intentionally complete at this scope. Three sub-agents, three tools, one planner, one hosted demo, one eval set. Future changes will be tightening rather than expansion — see [`docs/DECISIONS.md`](docs/DECISIONS.md) for the rationale.
 
 ---
 
