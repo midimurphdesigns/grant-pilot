@@ -120,3 +120,98 @@ pre {
   --normal-border: rgb(255 255 255 / 0.1);
   --normal-text: rgb(245 241 234);
 }
+/* ============================================================
+ * Custom cursor (ported from kevinmurphywebdev.com).
+ *
+ * Hard-coded colors so this block works regardless of which CSS
+ * variable system the host app uses. Brand tokens are:
+ *   bone   #F5F1EA
+ *   cyan   #4DFFFF
+ *
+ * `cursor: none` on html only fires when the JS attaches the
+ * `cursor-ready` class to <html> — so the native cursor stays for
+ * users who don't get the custom one (touch devices, no-JS, SSR).
+ * ============================================================ */
+
+html.cursor-ready,
+html.cursor-ready * {
+  cursor: none;
+}
+
+.cursor-root {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 999;
+  pointer-events: none;
+  transition: opacity 200ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+  /* `difference` keeps the cursor legible across cyan accents and
+   * photographs — it always reads as the inverse of whatever is
+   * painted underneath. */
+  mix-blend-mode: difference;
+}
+
+.cursor-mark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 4px;
+  background: #F5F1EA;
+  border: 0 solid transparent;
+  border-radius: 0;
+  transform: translate(-50%, -50%) rotate(0deg) scale(1);
+  transform-origin: 50% 50%;
+  transition:
+    width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    height 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-radius 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-width 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: width, height, transform;
+}
+
+/* Link / button / [data-magnetic] — 24×24 cyan outline square rotated
+ * 45deg. Targeting reticle. */
+.cursor-root[data-state="link"] .cursor-mark {
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: 1.5px solid #4DFFFF;
+  transform: translate(-50%, -50%) rotate(45deg) scale(1);
+}
+
+/* Image / picture / video — 56×56 bone outline circle (viewfinder). */
+.cursor-root[data-state="image"] .cursor-mark {
+  width: 56px;
+  height: 56px;
+  background: transparent;
+  border: 1px solid #F5F1EA;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) rotate(0deg) scale(1);
+}
+
+/* Editable text — 4×22 vertical bone bar (I-beam). */
+.cursor-root[data-state="text"] .cursor-mark {
+  width: 4px;
+  height: 22px;
+  background: #F5F1EA;
+  border: 0 solid transparent;
+  transform: translate(-50%, -50%) rotate(0deg) scale(1);
+}
+
+/* Click punch — scale-down on press, springs back on release. */
+.cursor-root[data-pressed="true"] .cursor-mark {
+  transform: translate(-50%, -50%) rotate(0deg) scale(0.6);
+  transition-duration: 90ms;
+}
+.cursor-root[data-state="link"][data-pressed="true"] .cursor-mark {
+  transform: translate(-50%, -50%) rotate(45deg) scale(0.6);
+}
+
+.cursor-root[data-hidden="true"] {
+  opacity: 0;
+}

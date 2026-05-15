@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { spaceGrotesk, geistMono, instrumentSerif } from "@/lib/fonts";
 import "./globals.css";
+import Cursor from "@/components/Cursor";
 
 const SITE_URL = "https://grant-pilot.kevinmurphywebdev.com";
 const TITLE = "grant-pilot — federal grants agent";
@@ -46,7 +47,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${spaceGrotesk.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
-      <body>{children}</body>
+      <body><Cursor />{children}</body>
     </html>
   );
 }
